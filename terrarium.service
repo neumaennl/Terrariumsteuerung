@@ -1,0 +1,18 @@
+[Unit]
+Description=Terrarium Steuerung (Lüfter & Beregnung)
+# WICHTIG: Erst starten, wenn Netzwerk und pigpio bereit sind
+After=network.target pigpiod.service
+Requires=pigpiod.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi
+# Hier den Pfad zu deinem Skript anpassen
+ExecStart=/usr/bin/python3 /home/pi/terrariumsteuerung.py
+# Neustart bei Absturz (nach 5 Sekunden Wartezeit)
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
