@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Terrariumsteuerung Web GUI</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 2em; background: #f4f4f4; }
+        .container { background: #fff; padding: 2em; border-radius: 8px; max-width: 800px; margin: auto; box-shadow: 0 2px 8px #ccc; }
+        h1 { text-align: center; }
+        .values, .form-section { margin-bottom: 2em; }
+        label { display: block; margin-top: 1em; }
+        input[type="number"] { width: 100px; }
+        .row { display: flex; justify-content: space-between; margin-bottom: 0.5em; }
+        .btn { background: #4CAF50; color: white; padding: 0.5em 1em; border: none; border-radius: 4px; cursor: pointer; }
+        .btn:hover { background: #388E3C; }
+        /* Chart sizing: use containers with explicit heights to avoid strange auto-sizing */
+        .chart-container { position: relative; width: 100%; height: 250px; margin-top: 1em; }
+        .chart-container.hist { height: 200px; }
+        canvas { display: block; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        function refreshData() {
+            fetch('/api/data').then(r => r.json()).then(data => {
+                document.getElementById('temperature').innerText = data.temperature.toFixed(1) + ' °C';
+                document.getElementById('humidity').innerText = data.humidity.toFixed(1) + ' %';
+                document.getElementById('rpm').innerText = data.rpm;
+                document.getElementById('fan_pwm').innerText = data.fan_pwm + ' %';
+                document.getElementById('pump_status').innerText = data.pump_status;
+            });
+        }
+
+        // Charts
+        let chartTime = null;
+        let chartHistogram = null;
+
+        function createCharts() {
+            const ctxT = document.getElementById('chartTime').getContext('2d');
+            chartTime = new Chart(ctxT, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { label: 'Feuchte (%)', data: [], borderColor: 'rgba(54,162,235,1)', fill: false },
+                        { label: 'Temperatur (°C)', data: [], borderColor: 'rgba(255,99,132,1)', fill: false }
+                    ]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+
+            const ctxH = document.getElementById('chartHistogram').getContext('2d');
+            chartHistogram = new Chart(ctxH, {
+                type: 'bar',
+                data: { labels: [], datasets: [{ label: 'Feuchte Verteilung', data: [], backgroundColor: 'rgba(75,192,192,0.6)' }] },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+        }
+
+        function buildHistogram(values, bins=10) {
+            if (values.length === 0) return { labels: [], counts: [] };
+            const min = Math.min(...values);
+            const max = Math.max(...values);
+            const step = (max - min) / bins || 1;
+            let counts = new Array(bins).fill(0);
+            for (const v of values) {
+                let idx = Math.floor((v - min) / step);
+                if (idx < 0) idx = 0;
+                if (idx >= bins) idx = bins - 1;
+                counts[idx]++;
+            }
+            const labels = [];
+            for (let i = 0; i < bins; i++) {
+                const a = (min + i * step).toFixed(1);
+                const b = (min + (i + 1) * step).toFixed(1);
+                labels.push(`${a}-${b}`);
+            }
+            return { labels, counts };
+        }
+
+        function refreshHistory() {
+            fetch('/api/history?limit=500').then(r => r.json()).then(rows => {
+                document.getElementById('history_count').innerText = rows.length;
+                const times = rows.map(r => new Date(r.ts * 1000).toLocaleTimeString());
+                const humid = rows.map(r => r.humidity);
+                const temp = rows.map(r => r.temperature);
+
+                // Update time chart
+                if (chartTime) {
+                    chartTime.data.labels = times;
+                    chartTime.data.datasets[0].data = humid;
+                    chartTime.data.datasets[1].data = temp;
+                    chartTime.update();
+                }
+
+                // Update histogram
+                const hist = buildHistogram(humid, 12);
+                if (chartHistogram) {
+                    chartHistogram.data.labels = hist.labels;
+                    chartHistogram.data.datasets[0].data = hist.counts;
+                    chartHistogram.update();
+                }
+            }).catch(err => console.error(err));
+        }
+
+        setInterval(refreshData, 1000);
+        setInterval(refreshHistory, 5000);
+        window.onload = () => { refreshData(); createCharts(); refreshHistory(); };
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>Terrariumsteuerung Web GUI</h1>
+        <div class="values">
+            <h2>Aktuelle Werte</h2>
+            <div class="row"><span>Temperatur:</span> <span id="temperature">-</span></div>
+            <div class="row"><span>Feuchtigkeit:</span> <span id="humidity">-</span></div>
+            <div class="row"><span>Lüfter RPM:</span> <span id="rpm">-</span></div>
+            <div class="row"><span>Lüfter PWM:</span> <span id="fan_pwm">-</span></div>
+            <div class="row"><span>Pumpenstatus:</span> <span id="pump_status">-</span></div>
+        </div>
+        <div class="form-section">
+            <h2>Schwellwerte ändern</h2>
+            <form method="POST" action="/update">
+                <label>Ziel-Feuchte Lüfter: <input type="number" step="0.1" name="FAN_TARGET_HUMIDITY" value="{{ data.FAN_TARGET_HUMIDITY }}"></label>
+                <label>Pumpe aktiv unter (%): <input type="number" step="0.1" name="PUMP_TRIGGER_HUMIDITY" value="{{ data.PUMP_TRIGGER_HUMIDITY }}"></label>
+                <label>Pumpen Not-Aus (%): <input type="number" step="0.1" name="PUMP_EMERGENCY_OFF" value="{{ data.PUMP_EMERGENCY_OFF }}"></label>
+                <label>Sprühdauer (Sekunden): <input type="number" name="PUMP_SPRAY_DURATION" value="{{ data.PUMP_SPRAY_DURATION }}"></label>
+                <label>Cooldown (Minuten): <input type="number" name="PUMP_COOLDOWN_MINUTES" value="{{ data.PUMP_COOLDOWN_MINUTES }}"></label>
+                <label>Nachtmodus Start (Stunde): <input type="number" name="NIGHT_START_HOUR" value="{{ data.NIGHT_START_HOUR }}"></label>
+                <label>Nachtmodus Ende (Stunde): <input type="number" name="NIGHT_END_HOUR" value="{{ data.NIGHT_END_HOUR }}"></label>
+                <br>
+                <button class="btn" type="submit">Speichern</button>
+            </form>
+        </div>
+
+        <div class="form-section">
+            <h2>Historie</h2>
+            <div class="row"><span>Letzte Messungen:</span> <span id="history_count">-</span></div>
+            <div class="chart-container"><canvas id="chartTime"></canvas></div>
+            <div class="chart-container hist"><canvas id="chartHistogram"></canvas></div>
+        </div>
+    </div>
+</body>
+</html>
