@@ -52,8 +52,11 @@ _current_pump_status = ""
 # --- Buffered persistence (reduce SD wear) ---
 _reading_buffer = []  # list of tuples (ts, temp, humidity, rpm, fan_pwm, pump_status)
 _buffer_last_flush = 0
-BUFFER_MAX = 15  # flush when this many entries accumulated
-BUFFER_FLUSH_INTERVAL = 15  # seconds
+SAMPLE_INTERVAL = 30  # seconds between captured samples for DB
+BUFFER_MAX = 10  # number of samples before flush (5min / 30s = 10)
+BUFFER_FLUSH_INTERVAL = 300  # seconds (5 minutes)
+RETENTION_DAYS = 31  # keep at least this many days of data
+_last_sample_ts = 0
 
 # --- Stop control / GPIO refs ---
 _stop_event = threading.Event()
@@ -123,6 +126,7 @@ def _get_conn():
 
 
 def flush_readings():
+    """Atomically write buffered readings and trim old data by time retention."""
     global _reading_buffer
     if not _reading_buffer:
         return
@@ -131,9 +135,10 @@ def flush_readings():
     try:
         cur.executemany('INSERT OR REPLACE INTO readings (ts, temperature, humidity, rpm, fan_pwm, pump_status) VALUES (?, ?, ?, ?, ?, ?)', _reading_buffer)
         conn.commit()
-        # Keep DB size bounded: keep last 10000 rows
+        # Trim older than retention period
         try:
-            cur.execute('DELETE FROM readings WHERE ts < (SELECT ts FROM readings ORDER BY ts DESC LIMIT 1 OFFSET 9999)')
+            cutoff = int(time.time()) - (RETENTION_DAYS * 86400)
+            cur.execute('DELETE FROM readings WHERE ts < ?', (cutoff,))
             conn.commit()
         except Exception:
             pass
@@ -149,7 +154,10 @@ def buffer_reading(ts, temperature, humidity, rpm, fan_pwm, pump_status):
     global _reading_buffer, _buffer_last_flush
     _reading_buffer.append((int(ts), temperature, humidity, rpm, int(fan_pwm), pump_status))
     now = time.time()
-    if len(_reading_buffer) >= BUFFER_MAX or (now - _buffer_last_flush) >= BUFFER_FLUSH_INTERVAL:
+    # Initialize last flush timestamp on first sample
+    if _buffer_last_flush == 0:
+        _buffer_last_flush = now
+    if len(_reading_buffer) >= BUFFER_MAX or ((now - _buffer_last_flush) >= BUFFER_FLUSH_INTERVAL):
         flush_readings()
         _buffer_last_flush = now
 
@@ -239,14 +247,53 @@ def _apply_threshold_local(name, value):
         NIGHT_END_HOUR = int(value)
 
 
-def get_history(limit=500):
+def get_history(limit=500, start=None, end=None, max_points=2000):
+    """Fetch history. If start/end provided (epoch seconds), fetch that range.
+    If the number of rows exceeds max_points, aggregate into time buckets to reduce points."""
     conn = _get_conn()
     cur = conn.cursor()
-    cur.execute('SELECT ts, temperature, humidity, rpm, fan_pwm, pump_status FROM readings ORDER BY ts DESC LIMIT ?', (limit,))
+    params = []
+    q = 'SELECT ts, temperature, humidity, rpm, fan_pwm, pump_status FROM readings'
+    if start is not None and end is not None:
+        q += ' WHERE ts BETWEEN ? AND ?'
+        params.extend([int(start), int(end)])
+    q += ' ORDER BY ts ASC'
+    if start is None and end is None:
+        q += ' LIMIT ?'
+        params.append(limit)
+    cur.execute(q, tuple(params))
     rows = cur.fetchall()
     conn.close()
-    # Return in ascending order
-    return [dict(ts=r[0], temperature=r[1], humidity=r[2], rpm=r[3], fan_pwm=r[4], pump_status=r[5]) for r in reversed(rows)]
+
+    # If too many, aggregate into buckets
+    if max_points and len(rows) > max_points and start is not None and end is not None and end > start:
+        bucket_size = int((end - start) / max_points) + 1
+        buckets = {}
+        for r in rows:
+            ts = int(r[0])
+            idx = (ts - start) // bucket_size
+            b = buckets.setdefault(idx, {'ts_sum':0,'count':0,'temp_sum':0.0,'hum_sum':0.0,'rpm_sum':0,'fan_sum':0})
+            b['ts_sum'] += ts
+            b['temp_sum'] += r[1]
+            b['hum_sum'] += r[2]
+            b['rpm_sum'] += r[3]
+            b['fan_sum'] += r[4]
+            b['count'] += 1
+        out = []
+        for idx in sorted(buckets.keys()):
+            b = buckets[idx]
+            c = b['count']
+            out.append(dict(
+                ts = int(b['ts_sum'] / c),
+                temperature = b['temp_sum'] / c,
+                humidity = b['hum_sum'] / c,
+                rpm = int(b['rpm_sum'] / c),
+                fan_pwm = int(b['fan_sum'] / c),
+                pump_status = ''
+            ))
+        return out
+
+    return [dict(ts=r[0], temperature=r[1], humidity=r[2], rpm=r[3], fan_pwm=r[4], pump_status=r[5]) for r in rows]
 
 # Initialize DB and load thresholds (safe to call on import)
 try:
@@ -380,9 +427,12 @@ def main():
             _current_fan_pwm = int(fan_pwm_val)
             _current_pump_status = pump_status
 
-            # Buffer reading (flush periodically to reduce SD writes)
+            # Buffer reading every SAMPLE_INTERVAL seconds (keep control loop responsive)
             try:
-                buffer_reading(now_ts, temp, humidity, rpm, int(fan_pwm_val), pump_status)
+                global _last_sample_ts
+                if (now_ts - _last_sample_ts) >= SAMPLE_INTERVAL:
+                    buffer_reading(now_ts, temp, humidity, rpm, int(fan_pwm_val), pump_status)
+                    _last_sample_ts = now_ts
             except Exception:
                 pass
 
@@ -391,7 +441,8 @@ def main():
             logger.debug(f"Lüfter: {int(fan_pwm_val)}% | Pumpe: {pump_status}")
             logger.debug('-' * 40)
 
-            time.sleep(1.0) # 1 Sekunde Takt
+            # Wait until next sample
+            time.sleep(SAMPLE_INTERVAL)
 
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt received, stopping...")

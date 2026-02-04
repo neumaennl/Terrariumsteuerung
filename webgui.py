@@ -51,14 +51,23 @@ def api_data():
 
 @app.route('/api/history')
 def api_history():
+    # Optional parameters: start,end (epoch seconds), limit, max_points
+    start = request.args.get('start', default=None, type=float)
+    end = request.args.get('end', default=None, type=float)
     limit = request.args.get('limit', default=500, type=int)
+    max_points = request.args.get('max_points', default=2000, type=int)
     try:
-        data = terrariumsteuerung.get_history(limit=limit)
+        if start is not None and end is not None:
+            data = terrariumsteuerung.get_history(start=start, end=end, max_points=max_points)
+        else:
+            data = terrariumsteuerung.get_history(limit=limit)
     except Exception:
+        logger.exception('Error fetching history')
         data = []
     return jsonify(data)
 
 
+@app.route('/api/reload_thresholds', methods=['POST'])
 @app.route('/api/reload-thresholds', methods=['POST'])
 def api_reload_thresholds():
     try:
