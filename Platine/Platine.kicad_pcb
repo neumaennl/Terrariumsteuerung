@@ -121,6 +121,12 @@
 	(net 2 "3V3")
 	(net 3 "5V")
 	(net 4 "12V")
+	(net 5 "Fan_Relais")
+	(net 6 "Pump_Relais")
+	(net 7 "SCL")
+	(net 8 "SDA")
+	(net 9 "Fan_Tacho")
+	(net 10 "Fan_PWM")
 	(footprint "Connector_PinSocket_2.54mm:PinSocket_1x08_P2.54mm_Vertical"
 		(layer "F.Cu")
 		(uuid "0335ff4a-e103-4ca6-8e09-ca9ec80dda1c")
@@ -373,6 +379,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 7 "SCL")
 			(uuid "2fa11bd7-caf5-44a3-a273-05ce118ce635")
 		)
 		(pad "6" thru_hole circle
@@ -381,6 +388,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 8 "SDA")
 			(uuid "34fb4800-a3f1-456c-8e42-adbb3dca9fad")
 		)
 		(pad "7" thru_hole circle
@@ -389,6 +397,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 9 "Fan_Tacho")
 			(uuid "df8b8140-9533-4bf2-a620-fe9765b753a7")
 		)
 		(pad "8" thru_hole circle
@@ -397,6 +406,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 10 "Fan_PWM")
 			(uuid "c7dabeb2-28ab-49f5-9110-0fa34a67c126")
 		)
 		(embedded_fonts no)
@@ -675,6 +685,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 5 "Fan_Relais")
 			(uuid "e762098b-8286-4ea2-84a2-307f517a0b6f")
 		)
 		(pad "7" thru_hole circle
@@ -683,6 +694,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 6 "Pump_Relais")
 			(uuid "08f5b42e-cc8a-4d13-89ee-376725a147b9")
 		)
 		(pad "8" thru_hole circle
@@ -931,6 +943,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 6 "Pump_Relais")
 			(uuid "92845bae-5ad8-4aaf-a1c4-2f2d45e15270")
 		)
 		(pad "2" thru_hole circle
@@ -967,7 +980,7 @@
 	(footprint "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical"
 		(layer "B.Cu")
 		(uuid "4ae81eda-47d6-4cbe-86a5-c9af619c1def")
-		(at 132.08 142.24 180)
+		(at 98.806 142.24 180)
 		(descr "Through hole straight pin header, 1x04, 2.54mm pitch, single row")
 		(tags "Through hole pin header THT 1x04 2.54mm single row")
 		(property "Reference" "Fan2"
@@ -1168,6 +1181,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 10 "Fan_PWM")
 			(uuid "606f06b2-6f2a-4d8b-be08-7277ab6fcbda")
 		)
 		(pad "3" thru_hole circle
@@ -1647,6 +1661,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 5 "Fan_Relais")
 			(uuid "2ca22ca0-225f-47c7-ba70-6eeacf58f2a6")
 		)
 		(pad "2" thru_hole circle
@@ -1683,7 +1698,7 @@
 	(footprint "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical"
 		(layer "B.Cu")
 		(uuid "a683afa1-6fd0-498c-954c-b3d803b01688")
-		(at 99.06 142.24 180)
+		(at 132.08 142.24 180)
 		(descr "Through hole straight pin header, 1x04, 2.54mm pitch, single row")
 		(tags "Through hole pin header THT 1x04 2.54mm single row")
 		(property "Reference" "Fan1"
@@ -1876,6 +1891,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 9 "Fan_Tacho")
 			(uuid "3823c6ab-d572-4d21-9552-5381de31fe53")
 		)
 		(pad "2" thru_hole circle
@@ -1884,6 +1900,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 10 "Fan_PWM")
 			(uuid "93dd6961-2348-47b7-bef8-b85b4aa61709")
 		)
 		(pad "3" thru_hole circle
@@ -2160,6 +2177,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 7 "SCL")
 			(uuid "a86a5a27-2f79-4693-b312-9f104a4c5100")
 		)
 		(pad "4" thru_hole circle
@@ -2168,6 +2186,7 @@
 			(drill 1)
 			(layers "*.Cu" "*.Mask")
 			(remove_unused_layers no)
+			(net 8 "SDA")
 			(uuid "d02bb505-349d-470f-9d47-d1ef71f7d8ac")
 		)
 		(embedded_fonts no)
@@ -2405,7 +2424,7 @@
 		)
 	)
 	(gr_text "GND"
-		(at 97.5 150.5 0)
+		(at 130.52 150.5 0)
 		(layer "B.SilkS")
 		(uuid "12711890-d8e4-4f99-8f92-0b0415eddb56")
 		(effects
@@ -2444,7 +2463,7 @@
 		)
 	)
 	(gr_text "Tacho"
-		(at 130.5 142.5 0)
+		(at 97.226 142.5 0)
 		(layer "B.SilkS")
 		(uuid "432e5564-c7ad-4a1e-8f28-841f1c12c3b3")
 		(effects
@@ -2470,7 +2489,7 @@
 		)
 	)
 	(gr_text "VCC"
-		(at 97.5 148 0)
+		(at 130.52 148 0)
 		(layer "B.SilkS")
 		(uuid "76102ebb-488d-4a41-93a8-e3627f84bd04")
 		(effects
@@ -2483,7 +2502,7 @@
 		)
 	)
 	(gr_text "Tacho"
-		(at 97.5 142.5 0)
+		(at 130.52 142.5 0)
 		(layer "B.SilkS")
 		(uuid "765be9fa-2022-47a0-8445-4ce5b56ee83c")
 		(effects
@@ -2548,7 +2567,7 @@
 		)
 	)
 	(gr_text "PWM"
-		(at 130.5 145 0)
+		(at 97.226 145 0)
 		(layer "B.SilkS")
 		(uuid "9e64b485-1f83-4d9b-8ec5-0c80630efd45")
 		(effects
@@ -2561,7 +2580,7 @@
 		)
 	)
 	(gr_text "VCC"
-		(at 130.5 148 0)
+		(at 97.226 148 0)
 		(layer "B.SilkS")
 		(uuid "a05c026c-7f45-4f01-8d6b-b4373faf7592")
 		(effects
@@ -2574,7 +2593,7 @@
 		)
 	)
 	(gr_text "GND"
-		(at 130.5 150.5 0)
+		(at 97.226 150.5 0)
 		(layer "B.SilkS")
 		(uuid "a4314279-c581-41c4-9c24-c74d3e937999")
 		(effects
@@ -2587,7 +2606,7 @@
 		)
 	)
 	(gr_text "PWM"
-		(at 97.5 145 0)
+		(at 130.52 145 0)
 		(layer "B.SilkS")
 		(uuid "a8d2384a-fc18-4da2-b025-db46275cd7b9")
 		(effects
