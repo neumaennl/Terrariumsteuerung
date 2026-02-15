@@ -186,6 +186,11 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
     
     sample_interval = get('SAMPLE_INTERVAL', 30)
     last_sample_time = time.time()
+    last_rpm_ms = time.ticks_ms()
+    rpm_window_ms = int(get('RPM_AVG_WINDOW_SECONDS', 2) * 1000)
+    rpm_window_ms = max(200, rpm_window_ms)
+    rpm_window_start_ms = last_rpm_ms
+    rpm_pulse_accum = 0
     
     print("[CTRL] Control loop started")
     
@@ -204,8 +209,19 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
             # --- B) Calculate RPM ---
             current_pulses = _rpm_pulses
             _rpm_pulses = 0
-            # Fan has 2 pulses per revolution
-            rpm = (current_pulses * 60) // 2 if current_pulses > 0 else 0
+            now_ms = time.ticks_ms()
+            last_rpm_ms = now_ms
+            rpm_pulse_accum += current_pulses
+            window_elapsed = time.ticks_diff(now_ms, rpm_window_start_ms)
+            if window_elapsed >= rpm_window_ms:
+                if window_elapsed > 0 and rpm_pulse_accum > 0:
+                    rpm = int((rpm_pulse_accum * 60000) / (2 * window_elapsed))
+                else:
+                    rpm = 0
+                rpm_pulse_accum = 0
+                rpm_window_start_ms = now_ms
+            else:
+                rpm = _current_rpm
             
             # --- C) Fan control ---
             # PWM: (current_humidity - target) / (100 - target) * 100
@@ -307,7 +323,7 @@ async def run(i2c=None, oled=None):
     
     pin_relay_fan = machine.Pin(get('PIN_RELAY_FAN', 4), machine.Pin.OUT)
     pin_relay_pump = machine.Pin(get('PIN_RELAY_PUMP', 5), machine.Pin.OUT)
-    pin_rpm_fan = machine.Pin(get('PIN_RPM_FAN', 3), machine.Pin.IN)
+    pin_rpm_fan = machine.Pin(get('PIN_RPM_FAN', 3), machine.Pin.IN, machine.Pin.PULL_UP)
     
     # Ensure pump starts off
     pin_relay_pump.off()
