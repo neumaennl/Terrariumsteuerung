@@ -63,6 +63,48 @@ def http_response(status, body, content_type='text/plain'):
     return headers + body
 
 
+async def _write_chunk(writer, data_bytes):
+    """Write a single HTTP chunk."""
+    if not data_bytes:
+        return
+    writer.write(("%x\r\n" % len(data_bytes)).encode())
+    writer.write(data_bytes)
+    writer.write(b"\r\n")
+
+
+async def stream_json_array(writer, items):
+    """Stream a JSON array using chunked transfer encoding."""
+    headers = (
+        'HTTP/1.1 200 OK\r\n'
+        'Content-Type: application/json\r\n'
+        'Transfer-Encoding: chunked\r\n'
+        'Connection: close\r\n'
+        '\r\n'
+    ).encode()
+    writer.write(headers)
+    await writer.drain()
+
+    await _write_chunk(writer, b'[')
+    first = True
+    count = 0
+    for item in items:
+        item_bytes = json.dumps(item).encode()
+        if first:
+            chunk = item_bytes
+            first = False
+        else:
+            chunk = b',' + item_bytes
+        await _write_chunk(writer, chunk)
+        count += 1
+        if count % 50 == 0:
+            gc.collect()
+            await asyncio.sleep(0)
+
+    await _write_chunk(writer, b']')
+    writer.write(b"0\r\n\r\n")
+    await writer.drain()
+
+
 def get_api_data():
     """Get current sensor and status data."""
     unix_timestamp = int(time.time()) + EPOCH_OFFSET
@@ -205,9 +247,17 @@ async def handle_api_history(writer, path, reader):
         print(f"[WEB] History fetch error: {e}")
         data = []
 
-    response = http_response(200, data)
-    del data
-    return response
+    try:
+        await stream_json_array(writer, data)
+    except Exception as e:
+        print(f"[WEB] History stream error: {e}")
+        response = http_response(500, {'error': 'history stream failed'})
+        writer.write(response)
+        await writer.drain()
+    finally:
+        del data
+        gc.collect()
+    return None
 
 
 async def handle_api_settings(writer, body_blob):
@@ -385,7 +435,10 @@ async def handle_client(reader, writer):
             response = await handle_api_data(writer, path)
         
         elif path.startswith('/api/history'):
-            response = await handle_api_history(writer, path, reader)
+            await handle_api_history(writer, path, reader)
+            await close_writer(writer)
+            gc.collect()
+            return
         
         elif path == '/api/settings' and method == 'POST':
             response = await handle_api_settings(writer, body_blob)
