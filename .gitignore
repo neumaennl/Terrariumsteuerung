@@ -1,2 +1,4 @@
 terrarium.db
 __pycache__/
+.vscode/
+.micropico
