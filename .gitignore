@@ -2,3 +2,5 @@ terrarium.db
 __pycache__/
 .vscode/
 .micropico
+Platine-backups/
+fp-info-cache
