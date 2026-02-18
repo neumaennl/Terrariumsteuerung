@@ -41,6 +41,14 @@
                 document.getElementById('rpm').innerText = data.rpm;
                 document.getElementById('fan_pwm').innerText = data.fan_pwm + ' %';
                 document.getElementById('pump_status').innerText = data.pump_status;
+                document.getElementById('mem_free').innerText = data.mem_free + ' B';
+                document.getElementById('mem_alloc').innerText = data.mem_alloc + ' B';
+                document.getElementById('mem_free_min').innerText = data.mem_free_min + ' B';
+
+                if (data.mem_last_sample) {
+                    const dt = new Date(data.mem_last_sample * 1000);
+                    document.getElementById('mem_last_sample').innerText = dt.toLocaleString('de-DE');
+                }
             });
         }
 
@@ -359,6 +367,10 @@
             <div class="row"><span>Lüfter RPM:</span> <span id="rpm">-</span></div>
             <div class="row"><span>Lüfter PWM:</span> <span id="fan_pwm">-</span></div>
             <div class="row"><span>Pumpenstatus:</span> <span id="pump_status">-</span></div>
+            <div class="row"><span>RAM frei:</span> <span id="mem_free">-</span></div>
+            <div class="row"><span>RAM belegt:</span> <span id="mem_alloc">-</span></div>
+            <div class="row"><span>RAM min frei:</span> <span id="mem_free_min">-</span></div>
+            <div class="row"><span>RAM letzte Messung:</span> <span id="mem_last_sample">-</span></div>
         </div>
         <div class="form-section">
             <h2>Schwellwerte ändern</h2>

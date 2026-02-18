@@ -51,15 +51,22 @@ DEFAULT_CONFIG = {
     'HISTORY_REFRESH_INTERVAL': 300,    # seconds between history chart refreshes (5 minutes)
     
     # Tiered storage configuration
-    'RECENT_RETENTION_SECONDS': 3 * 86400,     # 3 days of high-resolution (30s samples)
+    'RECENT_RETENTION_SECONDS': 3 * 86400,     # 3 days of high-resolution
     'ARCHIVE_AGGREGATE_INTERVAL': 15 * 60,     # 15 minutes for aggregated data
-    'TOTAL_RETENTION_SECONDS': 30 * 86400,     # 30 days total (3 days recent + 27 days aggregated)
+    'TOTAL_RETENTION_SECONDS': 30 * 86400,     # 30 days total
     'FLUSH_INTERVAL_SECONDS': 300,             # 5 minutes between disk flushes
     'AGGREGATE_INTERVAL_SECONDS': 600,         # 10 minutes between aggregation passes
     
     # Legacy (for backward compatibility)
     'HISTORY_RETENTION_DAYS': 7,
     'MAX_HISTORY_POINTS': 10000,
+    'MAX_PENDING_POINTS': 256,
+    'MAX_API_HISTORY_LIMIT': 3000,
+
+    # Runtime logging
+    'DEBUG_PRINT_INTERVAL_SECONDS': 30,
+    'MEMORY_SAMPLE_INTERVAL_SECONDS': 60,
+    'MEMORY_LOG_INTERVAL_SECONDS': 600,
 }
 
 # Current configuration (loaded on module import)

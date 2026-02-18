@@ -17,6 +17,12 @@ import os
 # Module-level server handle for graceful stop
 _server = None
 
+# Memory health telemetry
+_mem_free = 0
+_mem_alloc = 0
+_mem_free_min = 0
+_mem_last_sample = 0
+
 # Constants
 EPOCH_OFFSET = const(946684800)
 HEADER_READ_CHUNK = const(512)
@@ -107,6 +113,16 @@ async def stream_json_array(writer, items):
 
 def get_api_data():
     """Get current sensor and status data."""
+    global _mem_free, _mem_alloc, _mem_free_min, _mem_last_sample
+
+    if _mem_last_sample == 0:
+        # Fallback for first request before periodic sampler runs
+        gc.collect()
+        _mem_free = gc.mem_free()
+        _mem_alloc = gc.mem_alloc()
+        _mem_free_min = _mem_free
+        _mem_last_sample = int(time.time())
+
     unix_timestamp = int(time.time()) + EPOCH_OFFSET
     
     return {
@@ -124,6 +140,10 @@ def get_api_data():
         'NIGHT_END_HOUR': ctrl.get_threshold_value('NIGHT_END_HOUR'),
         'DATA_REFRESH_INTERVAL': config.get('DATA_REFRESH_INTERVAL', 30),
         'HISTORY_REFRESH_INTERVAL': config.get('HISTORY_REFRESH_INTERVAL', 300),
+        'mem_free': _mem_free,
+        'mem_alloc': _mem_alloc,
+        'mem_free_min': _mem_free_min,
+        'mem_last_sample': _mem_last_sample + EPOCH_OFFSET,
         'timestamp': unix_timestamp,
     }
 
@@ -172,7 +192,6 @@ async def read_request_fully(reader, header_blob, body_blob):
 async def handle_api_data(writer, path):
     """Handle /api/data request."""
     data = get_api_data()
-    print(f"[WEB] /api/data response: timestamp={data['timestamp']} (Unix epoch)")
     response = http_response(200, data)
     del data
     return response
@@ -182,29 +201,27 @@ async def handle_api_history(writer, path, reader):
     """Handle /api/history request."""
     params = {}
     if '?' in path:
-        resource, query = path.split('?', 1)
+        _, query = path.split('?', 1)
     else:
         query = ''
+
     for part in query.split('&'):
         if '=' in part:
             k, v = part.split('=', 1)
             params[k] = v
-    
-    del resource, query
-    gc.collect()
 
     start = None
     end = None
     limit = 500
-    
+
     if 'start' in params:
         try:
-            start = float(params['start'])
+            start = int(float(params['start']))
         except Exception:
             start = None
     if 'end' in params:
         try:
-            end = float(params['end'])
+            end = int(float(params['end']))
         except Exception:
             end = None
     if 'limit' in params:
@@ -213,36 +230,40 @@ async def handle_api_history(writer, path, reader):
         except Exception:
             limit = 500
 
-    del params
+    del params, query
+
+    max_limit = config.get('MAX_API_HISTORY_LIMIT', 800)
+    try:
+        max_limit = int(max_limit)
+    except Exception:
+        max_limit = 800
+    if max_limit < 100:
+        max_limit = 100
+    if limit < 1:
+        limit = 1
+    if limit > max_limit:
+        limit = max_limit
+
     current_rtc_time = int(time.time())
-    
     if start is not None and start > EPOCH_OFFSET:
         start = start - EPOCH_OFFSET
     if end is not None and end > EPOCH_OFFSET:
-        end =end - EPOCH_OFFSET
-    
+        end = end - EPOCH_OFFSET
+
     if start is not None and start < 0:
         start = 0
     if end is not None and end > current_rtc_time:
         end = current_rtc_time
-    
+
     gc.collect()
-    
+
     try:
         data = storage.get_readings(limit=limit, start_ts=start, end_ts=end)
-        print(f"[WEB] History query: start={start}, end={end}, limit={limit}, result count={len(data)}")
-        
         if len(data) == 0 and (start is not None or end is not None):
-            print(f"[WEB] No data in range (possible clock skew), fetching all available readings")
             data = storage.get_readings(limit=limit, start_ts=None, end_ts=None)
-            print(f"[WEB] Got {len(data)} total readings without time filters")
-        
+
         for reading in data:
             reading['ts'] = reading['ts'] + EPOCH_OFFSET
-        
-        if data:
-            print(f"[WEB] First reading after conversion: ts={data[0]['ts']} (Unix epoch, should be ~1.77B)")
-                
     except Exception as e:
         print(f"[WEB] History fetch error: {e}")
         data = []
@@ -257,6 +278,7 @@ async def handle_api_history(writer, path, reader):
     finally:
         del data
         gc.collect()
+
     return None
 
 
@@ -286,14 +308,10 @@ async def stream_html_response(writer):
     """Stream HTML response with on-the-fly placeholder substitution (memory-efficient)."""
     try:
         data = get_api_data()
-        # Build small dict of replacements for quick lookup
+        # Build replacement table with exact placeholder style used in index.html
         replacements = {}
         for key, value in data.items():
-            val_str = str(value)
-            replacements['{{ data.' + key + ' }}'] = val_str
-            replacements['{{data.' + key + '}}'] = val_str
-            replacements['{{ data.' + key + '}}'] = val_str
-            replacements['{{data.' + key + ' }}'] = val_str
+            replacements['{{ data.' + key + ' }}'] = str(value)
         del data
         gc.collect()
         
@@ -387,8 +405,6 @@ async def handle_client(reader, writer):
             if not more:
                 break
             raw += more
-
-        print(f"[WEB] Raw request: {raw[:100]}... (length: {len(raw)} bytes)")
 
         # Split headers/body at blank line
         header_blob, body_blob = raw, b''
@@ -487,17 +503,50 @@ async def run(host='0.0.0.0', port=80):
     gc.collect()
     print(f"[WEB] Free RAM before server: {gc.mem_free()} bytes")
     
-    global _server
+    global _server, _mem_free, _mem_alloc, _mem_free_min, _mem_last_sample
     try:
         server = await asyncio.start_server(handle_client, host, port)
         _server = server
         print(f"[WEB] Server listening on port {port}")
 
+        # Initialize memory telemetry immediately
+        gc.collect()
+        _mem_free = gc.mem_free()
+        _mem_alloc = gc.mem_alloc()
+        _mem_free_min = _mem_free
+        _mem_last_sample = int(time.time())
+
+        sample_interval = config.get('MEMORY_SAMPLE_INTERVAL_SECONDS', 60)
+        log_interval = config.get('MEMORY_LOG_INTERVAL_SECONDS', 600)
+        try:
+            sample_interval = int(sample_interval)
+        except Exception:
+            sample_interval = 60
+        try:
+            log_interval = int(log_interval)
+        except Exception:
+            log_interval = 600
+        if sample_interval < 10:
+            sample_interval = 10
+        if log_interval < sample_interval:
+            log_interval = sample_interval
+        next_log_ts = int(time.time()) + log_interval
+
         # Some MicroPython uasyncio Server objects don't implement serve_forever().
         # Keep the task alive until cancelled and close server on stop().
         try:
             while True:
-                await asyncio.sleep(3600)
+                await asyncio.sleep(sample_interval)
+                gc.collect()
+                _mem_free = gc.mem_free()
+                _mem_alloc = gc.mem_alloc()
+                if _mem_free_min == 0 or _mem_free < _mem_free_min:
+                    _mem_free_min = _mem_free
+                _mem_last_sample = int(time.time())
+
+                if _mem_last_sample >= next_log_ts:
+                    print(f"[WEB][MEM] free={_mem_free} alloc={_mem_alloc} min_free={_mem_free_min}")
+                    next_log_ts = _mem_last_sample + log_interval
         except asyncio.CancelledError:
             pass
         finally:

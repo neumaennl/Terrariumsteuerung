@@ -1,15 +1,15 @@
 """
-JSON file-based data storage for terrarium readings.
-Implements tiered storage with circular buffer and periodic aggregation.
+Streaming file-based data storage for terrarium readings.
+Uses NDJSON files to avoid loading full history into RAM.
 """
 
 import json
 import os
 import time
+import gc
 import config
-from config import get
 
-# Storage settings
+
 # MicroPython safe existence check (os.path may not exist)
 def _exists(path):
     try:
@@ -18,20 +18,22 @@ def _exists(path):
     except Exception:
         return False
 
-STORAGE_FILE = 'history.json'
-ARCHIVE_FILE = 'archive.json'
+
+# Storage files (line-delimited JSON)
+RECENT_FILE = 'history.ndjson'
+ARCHIVE_FILE = 'archive.ndjson'
+
 
 # Tiered storage configuration (in seconds)
-RECENT_RETENTION_SECONDS = get('RECENT_RETENTION_SECONDS', 3 * 86400)     # 3 days
-ARCHIVE_AGGREGATE_INTERVAL = get('ARCHIVE_AGGREGATE_INTERVAL', 15 * 60)   # 15 minutes
-TOTAL_RETENTION_SECONDS = get('TOTAL_RETENTION_SECONDS', 30 * 86400)      # 30 days
+RECENT_RETENTION_SECONDS = config.get('RECENT_RETENTION_SECONDS', 3 * 86400)     # 3 days
+ARCHIVE_AGGREGATE_INTERVAL = config.get('ARCHIVE_AGGREGATE_INTERVAL', 15 * 60)   # 15 minutes
+TOTAL_RETENTION_SECONDS = config.get('TOTAL_RETENTION_SECONDS', 30 * 86400)      # 30 days
 
-# In-memory buffer
-_buffer = []
-_archive_buffer = []
+# In-memory pending write buffer (small, bounded)
+_buffer = []  # tuples: (ts, temperature, humidity, rpm, fan_pwm, pump_status)
 _last_flush_time = 0
 _last_aggregate_time = 0
-_lock = False  # Simple mutex for async safety
+_lock = False  # simple mutex for async safety
 
 # Threshold keys are stored in config.json to avoid duplication
 _THRESHOLD_KEYS = [
@@ -44,275 +46,351 @@ _THRESHOLD_KEYS = [
     'NIGHT_END_HOUR',
 ]
 
-class Reading:
-    """Simple data structure for sensor readings."""
-    def __init__(self, ts, temperature, humidity, rpm, fan_pwm, pump_status):
-        self.ts = int(ts)
-        self.temperature = float(temperature)
-        self.humidity = float(humidity)
-        self.rpm = int(rpm)
-        self.fan_pwm = int(fan_pwm)
-        self.pump_status = str(pump_status)
-    
-    def to_dict(self):
-        return {
-            'ts': self.ts,
-            'temperature': self.temperature,
-            'humidity': self.humidity,
-            'rpm': self.rpm,
-            'fan_pwm': self.fan_pwm,
-            'pump_status': self.pump_status
-        }
+
+def _reading_tuple(ts, temperature, humidity, rpm, fan_pwm, pump_status):
+    return (
+        int(ts),
+        float(temperature),
+        float(humidity),
+        int(rpm),
+        int(fan_pwm),
+        str(pump_status),
+    )
+
+
+def _tuple_to_dict(reading):
+    return {
+        'ts': reading[0],
+        'temperature': reading[1],
+        'humidity': reading[2],
+        'rpm': reading[3],
+        'fan_pwm': reading[4],
+        'pump_status': reading[5],
+    }
+
+
+def _parse_line(line):
+    try:
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            return None
+        if 'ts' not in row:
+            return None
+        row['ts'] = int(row.get('ts', 0))
+        if row['ts'] <= 0:
+            return None
+        row['temperature'] = float(row.get('temperature', 0.0))
+        row['humidity'] = float(row.get('humidity', 0.0))
+        row['rpm'] = int(row.get('rpm', 0))
+        row['fan_pwm'] = int(row.get('fan_pwm', 0))
+        row['pump_status'] = str(row.get('pump_status', ''))
+        if 'sample_count' in row:
+            row['sample_count'] = int(row.get('sample_count', 1))
+        return row
+    except Exception:
+        return None
+
+
+def _append_rows_ndjson(filename, rows):
+    if not rows:
+        return
+    with open(filename, 'a') as f:
+        for row in rows:
+            f.write(json.dumps(row))
+            f.write('\n')
+
+
+def _replace_file_with_tmp(filename):
+    tmp = filename + '.tmp'
+    try:
+        os.remove(filename)
+    except Exception:
+        pass
+    os.rename(tmp, filename)
+
+
+def _trim_pending_buffer():
+    global _buffer
+    max_pending = config.get('MAX_PENDING_POINTS', 256)
+    try:
+        max_pending = int(max_pending)
+    except Exception:
+        max_pending = 256
+    if max_pending < 32:
+        max_pending = 32
+    elif max_pending > 1024:
+        max_pending = 1024
+    if len(_buffer) > max_pending:
+        _buffer = _buffer[-max_pending:]
+
+
+def _trim_archive_file(cutoff_ts):
+    if not _exists(ARCHIVE_FILE):
+        return
+
+    kept = 0
+    with open(ARCHIVE_FILE, 'r') as src, open(ARCHIVE_FILE + '.tmp', 'w') as dst:
+        for line in src:
+            row = _parse_line(line)
+            if not row:
+                continue
+            if row['ts'] > cutoff_ts:
+                dst.write(json.dumps(row))
+                dst.write('\n')
+                kept += 1
+
+    _replace_file_with_tmp(ARCHIVE_FILE)
+    print(f"[STORAGE] Archive trimmed to {kept} entries")
 
 
 def add_reading(ts, temperature, humidity, rpm, fan_pwm, pump_status):
-    """Add a reading to the buffer. Periodically flushes to storage."""
+    """Add a reading to pending buffer and flush/aggregate periodically."""
     global _buffer, _last_flush_time, _last_aggregate_time
-    
-    reading = Reading(ts, temperature, humidity, rpm, fan_pwm, pump_status)
-    _buffer.append(reading)
-    
-    # Trim buffer if too large (keep last N points)
-    max_points = get('MAX_HISTORY_POINTS', 10000)
-    if len(_buffer) > max_points:
-        _buffer = _buffer[-max_points:]
-    
+
+    _buffer.append(_reading_tuple(ts, temperature, humidity, rpm, fan_pwm, pump_status))
+    _trim_pending_buffer()
+
     now = time.time()
-    
-    # Periodically flush to disk
-    flush_interval = get('FLUSH_INTERVAL_SECONDS', 300)
-    if now - _last_flush_time > flush_interval:
+
+    flush_interval = config.get('FLUSH_INTERVAL_SECONDS', 300)
+    try:
+        flush_interval = int(flush_interval)
+    except Exception:
+        flush_interval = 300
+    if flush_interval < 5:
+        flush_interval = 5
+
+    if now - _last_flush_time >= flush_interval:
         flush_to_storage()
         _last_flush_time = now
-    
-    # Periodically aggregate old readings
-    aggregate_interval = get('AGGREGATE_INTERVAL_SECONDS', 600)
-    if now - _last_aggregate_time > aggregate_interval:
+
+    aggregate_interval = config.get('AGGREGATE_INTERVAL_SECONDS', 600)
+    try:
+        aggregate_interval = int(aggregate_interval)
+    except Exception:
+        aggregate_interval = 600
+    if aggregate_interval < 30:
+        aggregate_interval = 30
+
+    if now - _last_aggregate_time >= aggregate_interval:
         aggregate_old_readings()
         _last_aggregate_time = now
 
 
 def aggregate_old_readings():
     """
-    Convert readings older than RECENT_RETENTION_SECONDS to aggregated summaries.
-    Grouped by ARCHIVE_AGGREGATE_INTERVAL (e.g., 15-minute buckets).
+    Aggregate recent readings older than RECENT_RETENTION_SECONDS into archive buckets.
+    Operates in streaming mode (line-by-line) to keep RAM usage low.
     """
-    global _buffer, _archive_buffer, _lock
-    
-    if _lock or not _buffer:
+    global _lock
+
+    if _lock:
         return
-    
+
     _lock = True
     try:
-        now = time.time()
-        cutoff_time = now - RECENT_RETENTION_SECONDS
-        
-        # Find readings to aggregate
-        old_readings = [r for r in _buffer if r.ts < cutoff_time]
-        
-        if not old_readings:
+        # Flush pending rows first so aggregation sees all recent entries
+        flush_to_storage()
+
+        if not _exists(RECENT_FILE):
             return
-        
-        # Group into buckets
+
+        now = int(time.time())
+        recent_cutoff = now - int(RECENT_RETENTION_SECONDS)
+        total_cutoff = now - int(TOTAL_RETENTION_SECONDS)
+
         buckets = {}
-        for reading in old_readings:
-            # Calculate bucket timestamp (e.g., round to nearest 15 minutes)
-            bucket_idx = (reading.ts // ARCHIVE_AGGREGATE_INTERVAL) * ARCHIVE_AGGREGATE_INTERVAL
-            
-            if bucket_idx not in buckets:
-                buckets[bucket_idx] = {
-                    'readings': [],
-                    'ts': bucket_idx
-                }
-            buckets[bucket_idx]['readings'].append(reading)
-        
-        # Aggregate each bucket
-        aggregated = []
-        for bucket_idx in sorted(buckets.keys()):
-            bucket = buckets[bucket_idx]
-            readings = bucket['readings']
-            count = len(readings)
-            
-            # Calculate averages
-            avg_temp = sum(r.temperature for r in readings) / count
-            avg_humidity = sum(r.humidity for r in readings) / count
-            avg_rpm = sum(r.rpm for r in readings) // count
-            avg_pwm = sum(r.fan_pwm for r in readings) // count
-            last_status = readings[-1].pump_status
-            
-            aggregated.append({
-                'ts': bucket_idx,
-                'temperature': round(avg_temp, 2),
-                'humidity': round(avg_humidity, 2),
-                'rpm': avg_rpm,
-                'fan_pwm': avg_pwm,
-                'pump_status': last_status,
-                'sample_count': count  # Track how many readings were averaged
-            })
-        
-        # Add to archive buffer
-        _archive_buffer.extend(aggregated)
-        
-        # Trim old archive entries (keep only what's needed)
-        total_cutoff = now - TOTAL_RETENTION_SECONDS
-        _archive_buffer = [r for r in _archive_buffer if r['ts'] > total_cutoff]
-        
-        # Remove aggregated readings from recent buffer
-        _buffer = [r for r in _buffer if r.ts >= cutoff_time]
-        
-        print(f"[STORAGE] Aggregated {len(old_readings)} readings into {len(aggregated)} buckets")
-        
-        # Save immediately
-        flush_archive_to_storage()
-        
+        kept_recent = 0
+        aggregated_input = 0
+
+        with open(RECENT_FILE, 'r') as src, open(RECENT_FILE + '.tmp', 'w') as dst:
+            for line in src:
+                row = _parse_line(line)
+                if not row:
+                    continue
+
+                ts = row['ts']
+
+                # Drop anything outside total retention immediately
+                if ts <= total_cutoff:
+                    continue
+
+                if ts < recent_cutoff:
+                    bucket_idx = (ts // int(ARCHIVE_AGGREGATE_INTERVAL)) * int(ARCHIVE_AGGREGATE_INTERVAL)
+                    stats = buckets.get(bucket_idx)
+                    if stats is None:
+                        # count, sum_temp, sum_humidity, sum_rpm, sum_pwm, last_status
+                        buckets[bucket_idx] = [1, row['temperature'], row['humidity'], row['rpm'], row['fan_pwm'], row['pump_status']]
+                    else:
+                        stats[0] += 1
+                        stats[1] += row['temperature']
+                        stats[2] += row['humidity']
+                        stats[3] += row['rpm']
+                        stats[4] += row['fan_pwm']
+                        stats[5] = row['pump_status']
+                    aggregated_input += 1
+                else:
+                    dst.write(json.dumps(row))
+                    dst.write('\n')
+                    kept_recent += 1
+
+        _replace_file_with_tmp(RECENT_FILE)
+
+        if buckets:
+            aggregated_rows = []
+            for bucket_ts in sorted(buckets.keys()):
+                stats = buckets[bucket_ts]
+                count = stats[0]
+                aggregated_rows.append({
+                    'ts': int(bucket_ts),
+                    'temperature': round(stats[1] / count, 2),
+                    'humidity': round(stats[2] / count, 2),
+                    'rpm': int(stats[3] / count),
+                    'fan_pwm': int(stats[4] / count),
+                    'pump_status': stats[5],
+                    'sample_count': count,
+                })
+
+            _append_rows_ndjson(ARCHIVE_FILE, aggregated_rows)
+            _trim_archive_file(total_cutoff)
+            print(f"[STORAGE] Aggregated {aggregated_input} readings into {len(aggregated_rows)} buckets")
+        else:
+            # Still trim archive to total retention
+            _trim_archive_file(total_cutoff)
+
+        print(f"[STORAGE] Recent file kept {kept_recent} high-resolution entries")
+        gc.collect()
+
     except Exception as e:
         print(f"[STORAGE] Error aggregating readings: {e}")
     finally:
         _lock = False
 
 
-def flush_archive_to_storage():
-    """Write archive buffer to archive.json file."""
-    try:
-        if not _archive_buffer:
-            return
-        
-        data = {
-            'readings': _archive_buffer,
-            'last_update': time.time(),
-            'aggregate_interval': ARCHIVE_AGGREGATE_INTERVAL,
-            'note': 'Aggregated readings (averaged into buckets)'
-        }
-        
-        _atomic_write_json(ARCHIVE_FILE, data)
-        print(f"[STORAGE] Archive flushed with {len(_archive_buffer)} entries")
-    except Exception as e:
-        print(f"[STORAGE] Error flushing archive: {e}")
-
-
-def _atomic_write_json(filename, data):
-    """Safely write JSON data to a file using atomic operations (write .tmp → rename)."""
-    try:
-        # Write to temp file first
-        with open(filename + '.tmp', 'w') as f:
-            json.dump(data, f)
-        
-        # Replace old file
-        try:
-            os.remove(filename)
-        except:
-            pass
-        os.rename(filename + '.tmp', filename)
-        
-        return True
-    except Exception as e:
-        print(f"[STORAGE] Error in atomic write to {filename}: {e}")
-        return False
-
-
 def flush_to_storage():
-    """Write buffer to storage file without blocking."""
+    """Append pending buffer to recent NDJSON file without full-file rewrite."""
     global _buffer, _lock
-    
+
     if _lock or not _buffer:
         return
-    
+
     _lock = True
     try:
-        # Trim old entries from recent buffer (keep only recent)
-        cutoff_time = time.time() - RECENT_RETENTION_SECONDS
-        _buffer = [r for r in _buffer if r.ts > cutoff_time]
-        
-        # Write to file
-        data = {
-            'readings': [r.to_dict() for r in _buffer],
-            'last_update': time.time(),
-            'retention_seconds': RECENT_RETENTION_SECONDS,
-            'note': 'Recent high-resolution readings'
-        }
-        
-        # Use atomic write helper
-        _atomic_write_json(STORAGE_FILE, data)
-        print(f"[STORAGE] Flushed {len(_buffer)} recent readings to disk")
+        rows = [_tuple_to_dict(r) for r in _buffer]
+        _append_rows_ndjson(RECENT_FILE, rows)
+        print(f"[STORAGE] Flushed {len(rows)} readings to {RECENT_FILE}")
+        _buffer = []
     except Exception as e:
-        # If DB failed, keep buffer to try later
         print(f"[STORAGE] Error flushing to storage: {e}")
     finally:
         _lock = False
 
 
-
 def load_from_storage():
-    """Load readings from both recent and archive files into memory buffers."""
-    global _buffer, _archive_buffer
-    
+    """Initialize storage subsystem (streaming mode keeps data on disk)."""
+    global _buffer
     try:
-        # Load recent readings
-        if _exists(STORAGE_FILE):
-            with open(STORAGE_FILE, 'r') as f:
-                data = json.load(f)
-                readings = data.get('readings', [])
-                _buffer = []
-                for r in readings:
-                    reading = Reading(
-                        r['ts'], r['temperature'], r['humidity'],
-                        r['rpm'], r['fan_pwm'], r['pump_status']
-                    )
-                    _buffer.append(reading)
-                print(f"[STORAGE] Loaded {len(_buffer)} recent readings from disk")
-        
-        # Load archived/aggregated readings
-        if _exists(ARCHIVE_FILE):
-            with open(ARCHIVE_FILE, 'r') as f:
-                data = json.load(f)
-                _archive_buffer = data.get('readings', [])
-                print(f"[STORAGE] Loaded {len(_archive_buffer)} archived readings from disk")
-    
-    except Exception as e:
-        print(f"[STORAGE] Error loading from storage: {e}")
         _buffer = []
-        _archive_buffer = []
+        print("[STORAGE] Streaming storage initialized")
+    except Exception as e:
+        print(f"[STORAGE] Error loading storage: {e}")
+        _buffer = []
+
+
+def _append_filtered_with_limit(result, row, start_ts, end_ts, limit):
+    ts = row.get('ts', 0)
+    if start_ts is not None and ts < start_ts:
+        return
+    if end_ts is not None and ts > end_ts:
+        return
+
+    result.append(row)
+    if limit and len(result) > (limit + 64):
+        # Trim in chunks to avoid expensive per-item pop(0)
+        del result[:len(result) - limit]
+
+
+def _append_pending_tuple_with_limit(result, tup, start_ts, end_ts, limit):
+    ts = tup[0]
+    if start_ts is not None and ts < start_ts:
+        return
+    if end_ts is not None and ts > end_ts:
+        return
+
+    # Convert only rows that pass filtering
+    result.append({
+        'ts': ts,
+        'temperature': tup[1],
+        'humidity': tup[2],
+        'rpm': tup[3],
+        'fan_pwm': tup[4],
+        'pump_status': tup[5],
+    })
+    if limit and len(result) > (limit + 64):
+        del result[:len(result) - limit]
 
 
 def get_readings(limit=500, start_ts=None, end_ts=None):
     """
-    Get readings from both recent and archive buffers.
-    Returns combined results, optionally filtered by time range.
-    Recent readings (high resolution) are kept separate from archived (aggregated).
+    Get readings from archived and recent storage files in streaming mode.
+    Returns combined results sorted by timestamp.
     """
-    # Get recent readings
-    recent = [r.to_dict() for r in _buffer.copy()]
-    
-    # Get archived readings
-    archived = []
-    for r in _archive_buffer:
-        if isinstance(r, dict):
-            archived.append(r)
-        else:
-            # Handle if it's a Reading object (shouldn't happen, but just in case)
-            archived.append(r.to_dict() if hasattr(r, 'to_dict') else r)
+    if limit is not None:
+        try:
+            limit = int(limit)
+        except Exception:
+            limit = 500
+        if limit < 1:
+            limit = 1
+        max_limit = config.get('MAX_API_HISTORY_LIMIT', 3000)
+        try:
+            max_limit = int(max_limit)
+        except Exception:
+            max_limit = 3000
+        if max_limit < 100:
+            max_limit = 100
+        if limit > max_limit:
+            limit = max_limit
 
-    result = archived + recent
+    result = []
 
-    print(f"[STORAGE] Fetching readings: {len(recent)} recent, {len(archived)} archived before filtering")
-    print(f"[STORAGE] Time range: start={start_ts}, end={end_ts}")
-    print(f"[STORAGE] Sample readings: {result[:3]} ... {result[-3:]}")
-    
-    # Apply time filters
-    if start_ts is not None:
-        result = [r for r in result if r['ts'] >= start_ts]
-    if end_ts is not None:
-        result = [r for r in result if r['ts'] <= end_ts]
+    # Archive first (older data)
+    if _exists(ARCHIVE_FILE):
+        try:
+            with open(ARCHIVE_FILE, 'r') as f:
+                for line in f:
+                    row = _parse_line(line)
+                    if not row:
+                        continue
+                    _append_filtered_with_limit(result, row, start_ts, end_ts, limit)
+        except Exception as e:
+            print(f"[STORAGE] Archive read error: {e}")
 
-    print(f"[STORAGE] Readings after filtering: {len(result)} total (archived + recent)")
-    
-    # Sort by timestamp
-    result = sorted(result, key=lambda x: x['ts'])
-    
-    # Apply limit if specified
-    if limit:
+    # Then recent file (newer high-resolution data)
+    if _exists(RECENT_FILE):
+        try:
+            with open(RECENT_FILE, 'r') as f:
+                for line in f:
+                    row = _parse_line(line)
+                    if not row:
+                        continue
+                    _append_filtered_with_limit(result, row, start_ts, end_ts, limit)
+        except Exception as e:
+            print(f"[STORAGE] Recent read error: {e}")
+
+    # Add pending (not yet flushed) rows
+    if _buffer:
+        for tup in _buffer:
+            _append_pending_tuple_with_limit(result, tup, start_ts, end_ts, limit)
+
+    # Ensure strict timestamp ordering
+    result.sort(key=lambda x: x.get('ts', 0))
+
+    # Safety re-apply limit after sort
+    if limit and len(result) > limit:
         result = result[-limit:]
-    
+
+    gc.collect()
     return result
 
 
@@ -335,19 +413,18 @@ def save_thresholds(thresholds):
 
 def clear_history():
     """Clear all historical data."""
-    global _buffer, _archive_buffer
+    global _buffer
     _buffer = []
-    _archive_buffer = []
-    try:
-        os.remove(STORAGE_FILE)
-    except:
-        pass
-    try:
-        os.remove(ARCHIVE_FILE)
-    except:
-        pass
+
+    for filename in (RECENT_FILE, ARCHIVE_FILE):
+        try:
+            os.remove(filename)
+        except Exception:
+            pass
+
     print("[STORAGE] History cleared")
+    gc.collect()
 
 
-# Load on module import
+# Initialize on module import
 load_from_storage()

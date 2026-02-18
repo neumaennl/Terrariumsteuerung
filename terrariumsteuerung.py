@@ -6,6 +6,7 @@ Manages fan, pump, and sensors with async/await pattern.
 import machine
 import asyncio
 import time
+from array import array
 import config
 from config import get
 from storage import add_reading, save_thresholds, get_thresholds, flush_to_storage
@@ -26,7 +27,7 @@ _current_temp = 0.0
 _current_humidity = 0.0
 _current_rpm = 0
 _current_fan_pwm = 0
-_current_pump_status = "INIT"
+_current_pump_status = ("INIT", "")
 
 # --- Last spray time ---
 _last_spray_time = 0
@@ -145,8 +146,24 @@ def get_rpm():
 def get_fan_pwm():
     return _current_fan_pwm
 
+
+def _format_pump_status(status):
+    code, detail = status
+    if detail:
+        return f"{code} ({detail})"
+    return code
+
+
 def get_pump_status():
+    return _format_pump_status(_current_pump_status)
+
+
+def get_pump_status_parts():
     return _current_pump_status
+
+
+def _make_pump_status(code, detail=''):
+    return (str(code), str(detail) if detail else '')
 
 
 # --- RPM Interrupt Handler ---
@@ -185,12 +202,17 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
     print("[CTRL] RPM interrupt enabled")
     
     sample_interval = get('SAMPLE_INTERVAL', 30)
+    debug_interval = get('DEBUG_PRINT_INTERVAL_SECONDS', 30)
+    if debug_interval < 1:
+        debug_interval = 1
     last_sample_time = time.time()
+    last_debug_time = 0
     last_rpm_ms = time.ticks_ms()
     rpm_window_ms = int(get('RPM_AVG_WINDOW_SECONDS', 2) * 1000)
     rpm_window_ms = max(200, rpm_window_ms)
     rpm_window_start_ms = last_rpm_ms
     rpm_pulse_accum = 0
+    sensor_values = array('f', [0.0, 0.0, 0.0])
     
     print("[CTRL] Control loop started")
     
@@ -200,8 +222,8 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
             
             # --- A) Read sensor data ---
             try:
-                data = bme.read_compensated_data()
-                temp, humidity = data[0], data[2]
+                bme.read_compensated_data(sensor_values)
+                temp, humidity = sensor_values[0], sensor_values[2]
             except Exception as e:
                 print(f"[CTRL] Sensor read error: {e}")
                 temp, humidity = 20.0, 50.0
@@ -245,7 +267,7 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
             
             # --- D) Pump control ---
             is_pump_on = pin_relay_pump.value()
-            pump_status = "AUS"
+            pump_status = _make_pump_status("AUS")
             is_night = is_night_time()
             time_since_last = now - _last_spray_time
             cooldown_sec = PUMP_COOLDOWN_MINUTES * 60
@@ -255,30 +277,30 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
                 if humidity >= PUMP_EMERGENCY_OFF:
                     # Emergency off: humidity too high
                     pin_relay_pump.off()
-                    pump_status = "NOT-AUS"
+                    pump_status = _make_pump_status("NOT-AUS")
                 else:
                     duration_on = now - _last_spray_time
                     if duration_on >= PUMP_SPRAY_DURATION:
                         # Spray time finished
                         pin_relay_pump.off()
-                        pump_status = "AUS"
+                        pump_status = _make_pump_status("AUS")
                     else:
                         # Still spraying
                         remaining = int(PUMP_SPRAY_DURATION - duration_on)
-                        pump_status = f"AN ({remaining}s)"
+                        pump_status = _make_pump_status("AN", f"{remaining}s")
             else:
                 # Pump is off, decide if we should start
                 if is_night:
-                    pump_status = "NACHT"
+                    pump_status = _make_pump_status("NACHT")
                 elif time_since_last < cooldown_sec:
                     remaining = int((cooldown_sec - time_since_last) / 60)
-                    pump_status = f"PAUSE ({remaining}m)"
+                    pump_status = _make_pump_status("PAUSE", f"{remaining}m")
                 elif humidity < PUMP_TRIGGER_HUMIDITY:
                     pin_relay_pump.on()
                     _last_spray_time = now
-                    pump_status = "START"
+                    pump_status = _make_pump_status("START")
                 else:
-                    pump_status = "BEREIT"
+                    pump_status = _make_pump_status("BEREIT")
             
             # --- E) Update state for web API ---
             _current_temp = temp
@@ -289,17 +311,18 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
             
             # --- F) Log to storage (periodic) ---
             if now - last_sample_time >= sample_interval:
-                add_reading(now, temp, humidity, rpm, fan_pwm_val, pump_status)
+                add_reading(now, temp, humidity, rpm, fan_pwm_val, _format_pump_status(pump_status))
                 last_sample_time = now
             
-            # Debug output
-            print(f"[CTRL] T:{temp:.1f}°C H:{humidity:.1f}% RPM:{rpm} "
-                  f"PWM:{int(fan_pwm_val)}% Pump:{pump_status}")
+            # Debug output (throttled to reduce allocation churn)
+            if now - last_debug_time >= debug_interval:
+                pump_log_text = _format_pump_status(pump_status)
+                print(f"[CTRL] T:{temp:.1f}°C H:{humidity:.1f}% RPM:{rpm} "
+                    f"PWM:{int(fan_pwm_val)}% Pump:{pump_log_text}")
+                last_debug_time = now
             
         except Exception as e:
             print(f"[CTRL] Error in control loop: {e}")
-            import traceback
-            traceback.print_exc()
         
         # Sleep until next sample
         await asyncio.sleep(1)

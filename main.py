@@ -203,14 +203,14 @@ async def main_loop(oled, i2c):
             try:
                 temp = ctrl.get_temperature()
                 humidity = ctrl.get_humidity()
-                pump = ctrl.get_pump_status()[:9]  # Truncate status
+                pump_status, pump_detail = ctrl.get_pump_status_parts()
                 
                 await update_display(
                     oled,
                     f"T:{temp:.1f}'C",
                     f"H:{humidity:.1f}%",
-                    pump,
-                    ""
+                    pump_status,
+                    pump_detail
                 )
             except:
                 pass
