@@ -12,6 +12,7 @@ import config
 import terrariumsteuerung as ctrl
 import storage
 import os
+from ntp_sync import log_print as print, to_unix_timestamp, format_local_datetime
 
 
 # Module-level server handle for graceful stop
@@ -123,7 +124,8 @@ def get_api_data():
         _mem_free_min = _mem_free
         _mem_last_sample = int(time.time())
 
-    unix_timestamp = int(time.time()) + EPOCH_OFFSET
+    unix_timestamp = to_unix_timestamp(int(time.time()))
+    mem_last_sample_unix = to_unix_timestamp(_mem_last_sample)
     
     return {
         'temperature': round(ctrl.get_temperature(), 1),
@@ -143,7 +145,8 @@ def get_api_data():
         'mem_free': _mem_free,
         'mem_alloc': _mem_alloc,
         'mem_free_min': _mem_free_min,
-        'mem_last_sample': _mem_last_sample + EPOCH_OFFSET,
+        'mem_last_sample': mem_last_sample_unix,
+        'mem_last_sample_local': format_local_datetime(_mem_last_sample),
         'timestamp': unix_timestamp,
     }
 

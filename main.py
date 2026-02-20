@@ -14,6 +14,7 @@ import network
 import json
 import time
 import os
+from ntp_sync import log_print as print
 
 # WiFi credentials file
 WIFI_FILE = 'wifi.json'

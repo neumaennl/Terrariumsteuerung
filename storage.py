@@ -8,6 +8,7 @@ import os
 import time
 import gc
 import config
+from ntp_sync import log_print as print
 
 
 # MicroPython safe existence check (os.path may not exist)

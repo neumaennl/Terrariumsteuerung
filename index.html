@@ -45,7 +45,9 @@
                 document.getElementById('mem_alloc').innerText = data.mem_alloc + ' B';
                 document.getElementById('mem_free_min').innerText = data.mem_free_min + ' B';
 
-                if (data.mem_last_sample) {
+                if (data.mem_last_sample_local) {
+                    document.getElementById('mem_last_sample').innerText = data.mem_last_sample_local;
+                } else if (data.mem_last_sample) {
                     const dt = new Date(data.mem_last_sample * 1000);
                     document.getElementById('mem_last_sample').innerText = dt.toLocaleString('de-DE');
                 }

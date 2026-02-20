@@ -10,7 +10,7 @@ from array import array
 import config
 from config import get
 from storage import add_reading, save_thresholds, get_thresholds, flush_to_storage
-from ntp_sync import get_current_hour
+from ntp_sync import get_current_hour, log_print as print
 import bme280_float
 
 # --- Thresholds (loaded from storage) ---

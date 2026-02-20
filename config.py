@@ -14,10 +14,23 @@ def _exists(path):
     except Exception:
         return False
 
+
+def _log(*args, **kwargs):
+    try:
+        import ntp_sync
+        ntp_sync.log_print(*args, **kwargs)
+    except Exception:
+        print(*args, **kwargs)
+
 CONFIG_FILE = 'config.json'
 
 # Default configuration values
 DEFAULT_CONFIG = {
+    # Time zone (base offset without DST)
+    'TIMEZONE_UTC_OFFSET_MINUTES': 60,  # CET = UTC+1
+    'DST_ENABLED': True,
+    'DST_RULE': 'EU',
+
     # Pins (ESP32-C3 GPIO numbers)
     'PIN_PWM_FAN': 3,          # GPIO3 for PWM
     'PIN_RPM_FAN': 4,          # GPIO4 for RPM input
@@ -82,7 +95,7 @@ def load_config():
                 user_config = json.load(f)
                 _config.update(user_config)
     except Exception as e:
-        print(f"[CONFIG] Error loading config: {e}, using defaults")
+        _log(f"[CONFIG] Error loading config: {e}, using defaults")
     return _config.copy()
 
 
@@ -91,9 +104,9 @@ def save_config():
     try:
         with open(CONFIG_FILE, 'w') as f:
             json.dump(_config, f)
-        print("[CONFIG] Configuration saved")
+        _log("[CONFIG] Configuration saved")
     except Exception as e:
-        print(f"[CONFIG] Error saving config: {e}")
+        _log(f"[CONFIG] Error saving config: {e}")
 
 
 def get(key, default=None):
