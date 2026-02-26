@@ -9,7 +9,6 @@ import time
 from array import array
 import config
 from config import get
-from storage import add_reading, save_thresholds, get_thresholds, flush_to_storage
 from ntp_sync import get_current_hour, log_print as print
 import bme280_float
 
@@ -54,18 +53,14 @@ def load_thresholds_from_config():
     global PUMP_SPRAY_DURATION, PUMP_COOLDOWN_MINUTES, NIGHT_START_HOUR, NIGHT_END_HOUR
     
     try:
-        thresholds = get_thresholds()
-        if thresholds:
-            FAN_TARGET_HUMIDITY = _clamp_fan_target(
-                thresholds.get('FAN_TARGET_HUMIDITY', FAN_TARGET_HUMIDITY)
-            )
-            PUMP_TRIGGER_HUMIDITY = float(thresholds.get('PUMP_TRIGGER_HUMIDITY', PUMP_TRIGGER_HUMIDITY))
-            PUMP_EMERGENCY_OFF = float(thresholds.get('PUMP_EMERGENCY_OFF', PUMP_EMERGENCY_OFF))
-            PUMP_SPRAY_DURATION = int(thresholds.get('PUMP_SPRAY_DURATION', PUMP_SPRAY_DURATION))
-            PUMP_COOLDOWN_MINUTES = int(thresholds.get('PUMP_COOLDOWN_MINUTES', PUMP_COOLDOWN_MINUTES))
-            NIGHT_START_HOUR = int(thresholds.get('NIGHT_START_HOUR', NIGHT_START_HOUR))
-            NIGHT_END_HOUR = int(thresholds.get('NIGHT_END_HOUR', NIGHT_END_HOUR))
-            print("[CTRL] Thresholds loaded from config.json")
+        FAN_TARGET_HUMIDITY = _clamp_fan_target(get('FAN_TARGET_HUMIDITY', FAN_TARGET_HUMIDITY))
+        PUMP_TRIGGER_HUMIDITY = float(get('PUMP_TRIGGER_HUMIDITY', PUMP_TRIGGER_HUMIDITY))
+        PUMP_EMERGENCY_OFF = float(get('PUMP_EMERGENCY_OFF', PUMP_EMERGENCY_OFF))
+        PUMP_SPRAY_DURATION = int(get('PUMP_SPRAY_DURATION', PUMP_SPRAY_DURATION))
+        PUMP_COOLDOWN_MINUTES = int(get('PUMP_COOLDOWN_MINUTES', PUMP_COOLDOWN_MINUTES))
+        NIGHT_START_HOUR = int(get('NIGHT_START_HOUR', NIGHT_START_HOUR))
+        NIGHT_END_HOUR = int(get('NIGHT_END_HOUR', NIGHT_END_HOUR))
+        print("[CTRL] Thresholds loaded from config.json")
     except Exception as e:
         print(f"[CTRL] Error loading thresholds: {e}")
 
@@ -91,10 +86,7 @@ def set_threshold_value(name, value):
     elif name == 'NIGHT_END_HOUR':
         NIGHT_END_HOUR = int(value)
     
-    # Save to storage
-    thresholds = get_thresholds()
-    thresholds[name] = value
-    save_thresholds(thresholds)
+    config.set(name, value)
 
 
 def get_threshold_value(name):
@@ -309,9 +301,7 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
             _current_fan_pwm = int(fan_pwm_val)
             _current_pump_status = pump_status
             
-            # --- F) Log to storage (periodic) ---
             if now - last_sample_time >= sample_interval:
-                add_reading(now, temp, humidity, rpm, fan_pwm_val, _format_pump_status(pump_status))
                 last_sample_time = now
             
             # Debug output (throttled to reduce allocation churn)
@@ -365,7 +355,6 @@ async def run(i2c=None, oled=None):
         pin_pwm_fan.duty(0)
         pin_relay_fan.off()
         pin_relay_pump.off()
-        flush_to_storage()
         _running = False
         print("[CTRL] Stopped")
 
@@ -374,4 +363,3 @@ def stop():
     """Stop the controller."""
     global _running
     _running = False
-    flush_to_storage()

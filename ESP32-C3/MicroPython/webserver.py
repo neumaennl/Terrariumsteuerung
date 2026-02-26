@@ -1,6 +1,6 @@
 """
 Minimal HTTP web server for terrarium controller.
-Provides REST API and serves static HTML interface.
+Provides REST API endpoints to be used by a UI.
 Uses async/await for non-blocking operation.
 """
 
@@ -10,8 +10,6 @@ import time
 import gc
 import config
 import terrariumsteuerung as ctrl
-import storage
-import os
 from ntp_sync import log_print as print, to_unix_timestamp, format_local_datetime
 
 
@@ -28,15 +26,6 @@ _mem_last_sample = 0
 EPOCH_OFFSET = const(946684800)
 HEADER_READ_CHUNK = const(512)
 MAX_HEADER_BYTES = const(4096)
-
-
-# MicroPython: os.path may be missing. Provide a small exists() helper using os.stat
-def _exists(path):
-    try:
-        os.stat(path)
-        return True
-    except Exception:
-        return False
 
 
 # Simple HTTP response helpers
@@ -68,48 +57,6 @@ def http_response(status, body, content_type='text/plain'):
     ).encode()
     
     return headers + body
-
-
-async def _write_chunk(writer, data_bytes):
-    """Write a single HTTP chunk."""
-    if not data_bytes:
-        return
-    writer.write(("%x\r\n" % len(data_bytes)).encode())
-    writer.write(data_bytes)
-    writer.write(b"\r\n")
-
-
-async def stream_json_array(writer, items):
-    """Stream a JSON array using chunked transfer encoding."""
-    headers = (
-        'HTTP/1.1 200 OK\r\n'
-        'Content-Type: application/json\r\n'
-        'Transfer-Encoding: chunked\r\n'
-        'Connection: close\r\n'
-        '\r\n'
-    ).encode()
-    writer.write(headers)
-    await writer.drain()
-
-    await _write_chunk(writer, b'[')
-    first = True
-    count = 0
-    for item in items:
-        item_bytes = json.dumps(item).encode()
-        if first:
-            chunk = item_bytes
-            first = False
-        else:
-            chunk = b',' + item_bytes
-        await _write_chunk(writer, chunk)
-        count += 1
-        if count % 50 == 0:
-            gc.collect()
-            await asyncio.sleep(0)
-
-    await _write_chunk(writer, b']')
-    writer.write(b"0\r\n\r\n")
-    await writer.drain()
 
 
 def get_api_data():
@@ -200,91 +147,6 @@ async def handle_api_data(writer, path):
     return response
 
 
-async def handle_api_history(writer, path, reader):
-    """Handle /api/history request."""
-    params = {}
-    if '?' in path:
-        _, query = path.split('?', 1)
-    else:
-        query = ''
-
-    for part in query.split('&'):
-        if '=' in part:
-            k, v = part.split('=', 1)
-            params[k] = v
-
-    start = None
-    end = None
-    limit = 500
-
-    if 'start' in params:
-        try:
-            start = int(float(params['start']))
-        except Exception:
-            start = None
-    if 'end' in params:
-        try:
-            end = int(float(params['end']))
-        except Exception:
-            end = None
-    if 'limit' in params:
-        try:
-            limit = int(params['limit'])
-        except Exception:
-            limit = 500
-
-    del params, query
-
-    max_limit = config.get('MAX_API_HISTORY_LIMIT', 800)
-    try:
-        max_limit = int(max_limit)
-    except Exception:
-        max_limit = 800
-    if max_limit < 100:
-        max_limit = 100
-    if limit < 1:
-        limit = 1
-    if limit > max_limit:
-        limit = max_limit
-
-    current_rtc_time = int(time.time())
-    if start is not None and start > EPOCH_OFFSET:
-        start = start - EPOCH_OFFSET
-    if end is not None and end > EPOCH_OFFSET:
-        end = end - EPOCH_OFFSET
-
-    if start is not None and start < 0:
-        start = 0
-    if end is not None and end > current_rtc_time:
-        end = current_rtc_time
-
-    gc.collect()
-
-    try:
-        data = storage.get_readings(limit=limit, start_ts=start, end_ts=end)
-        if len(data) == 0 and (start is not None or end is not None):
-            data = storage.get_readings(limit=limit, start_ts=None, end_ts=None)
-
-        for reading in data:
-            reading['ts'] = reading['ts'] + EPOCH_OFFSET
-    except Exception as e:
-        print(f"[WEB] History fetch error: {e}")
-        data = []
-
-    try:
-        await stream_json_array(writer, data)
-    except Exception as e:
-        print(f"[WEB] History stream error: {e}")
-        response = http_response(500, {'error': 'history stream failed'})
-        writer.write(response)
-        await writer.drain()
-    finally:
-        del data
-        gc.collect()
-
-    return None
-
-
 async def handle_api_settings(writer, body_blob):
     """Handle /api/settings POST request."""
     try:
@@ -305,89 +167,6 @@ async def handle_api_settings(writer, body_blob):
         response = http_response(400, {'error': str(e)})
     
     return response
-
-
-async def stream_html_response(writer):
-    """Stream HTML response with on-the-fly placeholder substitution (memory-efficient)."""
-    try:
-        data = get_api_data()
-        # Build replacement table with exact placeholder style used in index.html
-        replacements = {}
-        for key, value in data.items():
-            replacements['{{ data.' + key + ' }}'] = str(value)
-        del data
-        gc.collect()
-        
-        path = "index.html"
-        if not _exists(path):
-            # No template available, send error
-            response = http_response(200, '<html><body><h1>No template found</h1></body></html>', 'text/html')
-            writer.write(response)
-            await writer.drain()
-            return
-        
-        # Send headers first
-        headers = (
-            'HTTP/1.1 200 OK\r\n'
-            'Content-Type: text/html; charset=utf-8\r\n'
-            'Connection: close\r\n'
-            '\r\n'
-        ).encode()
-        writer.write(headers)
-        await writer.drain()
-        del headers
-        
-        # Stream file in chunks with overlap buffer to handle placeholders spanning boundaries
-        chunk_size = 2048  # Increased from 512 to reduce write/drain cycles
-        overlap_size = 50  # Keep last 50 chars from previous chunk to catch split placeholders
-        overlap_buffer = ''
-        
-        try:
-            with open(path, 'r') as f:
-                while True:
-                    chunk = f.read(chunk_size)
-                    if not chunk:
-                        # Last chunk: flush overlap buffer with replacements
-                        if overlap_buffer:
-                            for placeholder, value in replacements.items():
-                                overlap_buffer = overlap_buffer.replace(placeholder, value)
-                            writer.write(overlap_buffer.encode())
-                        # Final drain to ensure all data is sent before closing
-                        await writer.drain()
-                        break
-                    
-                    # Prepend overlap from previous chunk
-                    full_text = overlap_buffer + chunk
-                    
-                    # Do ALL replacements on the full concatenated text FIRST
-                    # This ensures placeholders spanning boundaries are caught
-                    for placeholder, value in replacements.items():
-                        full_text = full_text.replace(placeholder, value)
-                    
-                    # Now extract overlap for next iteration (after replacements)
-                    # Keep last overlap_size characters (of the replaced text)
-                    if len(full_text) > overlap_size:
-                        to_send = full_text[:-overlap_size]
-                        overlap_buffer = full_text[-overlap_size:]
-                    else:
-                        overlap_buffer = full_text
-                        to_send = ''
-                    
-                    # Send the portion (already replaced above)
-                    if to_send:
-                        writer.write(to_send.encode())
-                        # Drain less frequently to reduce connection overhead
-                        if len(to_send) >= chunk_size - overlap_size:
-                            await writer.drain()
-                            await asyncio.sleep(0.005)  # Small delay to prevent overwhelming the network stack
-        except Exception as e:
-            print(f"[WEB] Stream error: {e}")
-        
-        del replacements
-        gc.collect()
-        
-    except Exception as e:
-        print(f"[WEB] Template stream error: {e}")
 
 
 async def handle_client(reader, writer):
@@ -443,22 +222,9 @@ async def handle_client(reader, writer):
         # Route request
         response = None
         
-        if path == '/' or path == '/index.html':
-            await stream_html_response(writer)
-            await asyncio.sleep(0.01)
-            await close_writer(writer)
-            gc.collect()
-            return
-        
-        elif path == '/api/data':
+        if path == '/api/data':
             response = await handle_api_data(writer, path)
-        
-        elif path.startswith('/api/history'):
-            await handle_api_history(writer, path, reader)
-            await close_writer(writer)
-            gc.collect()
-            return
-        
+
         elif path == '/api/settings' and method == 'POST':
             response = await handle_api_settings(writer, body_blob)
         

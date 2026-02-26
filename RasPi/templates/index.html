@@ -2,206 +2,115 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Terrariumsteuerung</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 2em; background: #f4f4f4; }
-        .container { background: #fff; padding: 2em; border-radius: 8px; max-width: 800px; margin: auto; box-shadow: 0 2px 8px #ccc; }
+        body { font-family: Arial, sans-serif; margin: 0; background: #f4f4f4; }
+        .container { background: #fff; padding: 2em; border-radius: 8px; max-width: 900px; margin: 2em auto; box-shadow: 0 2px 8px #ccc; }
         h1 { text-align: center; }
         .values, .form-section { margin-bottom: 2em; }
         label { display: block; margin-top: 1em; }
-        input[type="number"] { width: 100px; }
+        input[type="number"] { width: 120px; max-width: 100%; }
         .row { display: flex; justify-content: space-between; margin-bottom: 0.5em; }
-        .btn { background: #4CAF50; color: white; padding: 0.5em 1em; border: none; border-radius: 4px; cursor: pointer; }
+        .btn { background: #4CAF50; color: white; padding: 0.6em 1.1em; border: none; border-radius: 4px; cursor: pointer; }
         .btn:hover { background: #388E3C; }
-        /* Chart sizing: use containers with explicit heights to avoid strange auto-sizing */
         .chart-container { position: relative; width: 100%; height: 250px; margin-top: 1em; }
         .chart-container.hist { height: 200px; }
         canvas { display: block; }
-    </style>
-    <!-- Use UMD builds and bundled adapter to avoid module/require issues -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/luxon@3.3.0/build/global/luxon.min.js"></script>
-    <!-- Adapter v2 for Chart.js v4 -->
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@2.0.0/dist/chartjs-adapter-luxon.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
-    <script>
-        function refreshData() {
-            fetch('/api/data').then(r => r.json()).then(data => {
-                document.getElementById('temperature').innerText = data.temperature.toFixed(1) + ' °C';
-                document.getElementById('humidity').innerText = data.humidity.toFixed(1) + ' %';
-                document.getElementById('rpm').innerText = data.rpm;
-                document.getElementById('fan_pwm').innerText = data.fan_pwm + ' %';
-                document.getElementById('pump_status').innerText = data.pump_status;
-            });
+        .status-offline { color: #b71c1c; font-weight: bold; }
+        .status-online { color: #1b5e20; font-weight: bold; }
+        @media (max-width: 768px) {
+            .container { margin: 0; border-radius: 0; padding: 1.2em; box-shadow: none; }
+            .row { flex-direction: column; align-items: flex-start; gap: 0.2em; }
+            input[type="number"] { width: 100%; }
+            .btn { width: 100%; margin-top: 0.6em; }
+            .chart-container { height: 220px; }
+            .chart-container.hist { height: 180px; }
         }
-
-        // Charts
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.7.2/build/global/luxon.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+    <script>
         let chartTime = null;
         let chartHistogram = null;
 
+        function refreshData() {
+            fetch('/api/data').then(r => r.json()).then(data => {
+                document.getElementById('temperature').innerText = Number(data.temperature).toFixed(1) + ' °C';
+                document.getElementById('humidity').innerText = Number(data.humidity).toFixed(1) + ' %';
+                document.getElementById('rpm').innerText = data.rpm;
+                document.getElementById('fan_pwm').innerText = data.fan_pwm + ' %';
+                document.getElementById('pump_status').innerText = data.pump_status;
+
+                const statusEl = document.getElementById('esp_status');
+                if (data.esp_online) {
+                    statusEl.innerText = 'Online';
+                    statusEl.className = 'status-online';
+                } else {
+                    statusEl.innerText = 'Offline' + (data.esp_error ? ' (' + data.esp_error + ')' : '');
+                    statusEl.className = 'status-offline';
+                }
+
+                document.getElementById('poll_interval').innerText = data.poll_interval_seconds + ' s';
+                document.getElementById('esp_url').innerText = data.esp_base_url;
+
+                const form = document.getElementById('settingsForm');
+                ['FAN_TARGET_HUMIDITY','PUMP_TRIGGER_HUMIDITY','PUMP_EMERGENCY_OFF','PUMP_SPRAY_DURATION','PUMP_COOLDOWN_MINUTES','NIGHT_START_HOUR','NIGHT_END_HOUR'].forEach(key => {
+                    if (form.elements[key] && data[key] !== undefined && data[key] !== null) {
+                        form.elements[key].value = data[key];
+                    }
+                });
+            });
+        }
+
         function createCharts() {
-            // Register zoom plugin if available (UMD exposes global 'chartjs_plugin_zoom')
             try {
                 const zoomPlugin = window.chartjs_plugin_zoom || window.ChartZoom || window.zoomPlugin;
                 if (zoomPlugin && typeof Chart.register === 'function') {
                     Chart.register(zoomPlugin);
                 }
-            } catch (e) {
-                console.warn('Zoom plugin not available or failed to register', e);
-            }
+            } catch (e) {}
 
-            // Ensure Luxon is available and set German locale
             try {
                 if (window.luxon && window.luxon.Settings) {
                     window.luxon.Settings.defaultLocale = 'de';
                 }
-            } catch (e) {
-                console.warn('Luxon locale setup failed', e);
-            }
-
-            // Provide minimal Chart.adapters.date implementation using Luxon if adapter not registered
-            try {
-                if (!Chart.adapters || !Chart.adapters.date) {
-                    if (!window.luxon) {
-                        console.warn('Luxon missing, cannot provide date adapter');
-                    } else {
-                        Chart.adapters = Chart.adapters || {};
-                        Chart.adapters.date = {
-                            formats: function() {
-                                return {
-                                    millisecond: 'HH:mm:ss.SSS',
-                                    second: 'HH:mm:ss',
-                                    minute: 'HH:mm',
-                                    hour: 'HH:mm',
-                                    day: 'dd.LL.yyyy',
-                                    week: 'dd.LL.yyyy',
-                                    month: 'LL.yyyy',
-                                    quarter: 'LLL yyyy',
-                                    year: 'yyyy'
-                                };
-                            },
-                            parse: function(value) {
-                                if (value === null || value === undefined) return null;
-                                if (typeof value === 'number') return value;
-                                if (typeof value === 'string') {
-                                    const dtIso = luxon.DateTime.fromISO(value);
-                                    if (dtIso.isValid) return dtIso.toMillis();
-                                    const asNum = Number(value);
-                                    if (!isNaN(asNum)) return asNum;
-                                    const dt = luxon.DateTime.fromRFC2822(value);
-                                    if (dt.isValid) return dt.toMillis();
-                                    return null;
-                                }
-                                if (value instanceof Date) return value.getTime();
-                                return null;
-                            },
-                            format: function(time, fmt) {
-                                return luxon.DateTime.fromMillis(Number(time)).toFormat(fmt);
-                            },
-                            add: function(time, amount, unit) {
-                                const o = {};
-                                o[unit] = amount;
-                                return luxon.DateTime.fromMillis(Number(time)).plus(o).toMillis();
-                            },
-                            diff: function(max, min, unit) {
-                                return luxon.DateTime.fromMillis(Number(max)).diff(luxon.DateTime.fromMillis(Number(min)), unit).as(unit);
-                            },
-                            startOf: function(time, unit) {
-                                const u = (unit === 'isoWeek') ? 'week' : unit;
-                                return luxon.DateTime.fromMillis(Number(time)).startOf(u).toMillis();
-                            },
-                            endOf: function(time, unit) {
-                                const u = (unit === 'isoWeek') ? 'week' : unit;
-                                return luxon.DateTime.fromMillis(Number(time)).endOf(u).toMillis();
-                            }
-                        };
-                        console.info('Provided minimal Chart.adapters.date using Luxon');
-                    }
-                }
-            } catch (e) {
-                console.warn('Failed to provide fallback date adapter', e);
-            }
-            // Debug: log adapter object
-            try {
-                console.log('Chart.adapters.date:', Chart.adapters && Chart.adapters.date);
-            } catch (e) { /* ignore */ }
+            } catch (e) {}
 
             const ctxT = document.getElementById('chartTime').getContext('2d');
-            try {
-                // Debug: test adapter methods before creating chart
-                try {
-                    console.log('Adapter test - formats():', Chart.adapters && Chart.adapters.date && Chart.adapters.date.formats && Chart.adapters.date.formats());
-                    console.log('Adapter test - startOf(now,hour):', Chart.adapters && Chart.adapters.date && Chart.adapters.date.startOf && Chart.adapters.date.startOf(Date.now(), 'hour'));
-                    console.log('Adapter test - parse(iso):', Chart.adapters && Chart.adapters.date && Chart.adapters.date.parse && Chart.adapters.date.parse(new Date().toISOString()));
-                } catch (dbg) {
-                    console.warn('Adapter test threw:', dbg);
-                }
-
-                chartTime = new Chart(ctxT, {
-                    type: 'line',
-                    data: {
-                        datasets: [
-                            { label: 'Feuchte (%)', data: [], borderColor: 'rgba(54,162,235,1)', fill: false, parsing: { xAxisKey: 'x', yAxisKey: 'y' } },
-                            { label: 'Temperatur (°C)', data: [], borderColor: 'rgba(255,99,132,1)', fill: false, parsing: { xAxisKey: 'x', yAxisKey: 'y' } }
-                        ]
+            chartTime = new Chart(ctxT, {
+                type: 'line',
+                data: {
+                    datasets: [
+                        { label: 'Feuchte (%)', data: [], borderColor: 'rgba(54,162,235,1)', fill: false, parsing: { xAxisKey: 'x', yAxisKey: 'y' } },
+                        { label: 'Temperatur (°C)', data: [], borderColor: 'rgba(255,99,132,1)', fill: false, parsing: { xAxisKey: 'x', yAxisKey: 'y' } }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { type: 'linear', title: { display: true, text: 'Zeit' } },
+                        y: { title: { display: true, text: 'Wert' } }
                     },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        scales: {
-                            x: {
-                                type: 'linear',
-                                title: { display: true, text: 'Zeit' },
-                                ticks: {
-                                    callback: function(value, index, ticks) {
-                                        try {
-                                            return luxon.DateTime.fromMillis(Number(value)).toFormat('dd.LL.yyyy HH:mm');
-                                        } catch (e) { return value; }
-                                    }
-                                }
-                            },
-                            y: { title: { display: true, text: 'Wert' } }
-                        },
-                        plugins: {
-                            tooltip: {
-                                callbacks: {
-                                    title: function(items) {
-                                        if (!items || !items.length) return '';
-                                        try {
-                                            return luxon.DateTime.fromMillis(Number(items[0].parsed.x)).toFormat('dd.LL.yyyy HH:mm');
-                                        } catch (e) { return ''; }
-                                    },
-                                    label: function(context) {
-                                        const label = context.dataset.label || '';
-                                        return `${label}: ${context.parsed.y}`;
-                                    }
-                                }
-                            },
-                            zoom: {
-                                pan: { enabled: true, mode: 'x', modifierKey: 'ctrl' },
-                                zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' }
-                            }
+                    plugins: {
+                        zoom: {
+                            pan: { enabled: true, mode: 'x', modifierKey: 'ctrl' },
+                            zoom: { wheel: { enabled: true }, pinch: { enabled: true }, drag: { enabled: true }, mode: 'x' }
                         }
                     }
-                });
-            } catch (e) {
-                console.error('Fehler beim Erstellen des Zeitdiagramms:', e);
-                try {
-                    console.error('Chart.adapters.date:', Chart.adapters ? Chart.adapters.date : '<no adapters object>');
-                    console.error('Luxon present:', !!window.luxon);
-                } catch (err) { /* ignore */ }
-            }
+                }
+            });
 
             const ctxH = document.getElementById('chartHistogram').getContext('2d');
-            try {
-                chartHistogram = new Chart(ctxH, {
-                    type: 'bar',
-                    data: { labels: [], datasets: [{ label: 'Feuchte Verteilung', data: [], backgroundColor: 'rgba(75,192,192,0.6)' }] },
-                    options: { responsive: true, maintainAspectRatio: false }
-                });
-            } catch (e) {
-                console.error('Fehler beim Erstellen des Histogramms:', e);
-            }
+            chartHistogram = new Chart(ctxH, {
+                type: 'bar',
+                data: { labels: [], datasets: [{ label: 'Feuchte Verteilung', data: [], backgroundColor: 'rgba(75,192,192,0.6)' }] },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
         }
 
         function buildHistogram(values, bins=10) {
@@ -225,10 +134,6 @@
             return { labels, counts };
         }
 
-        function transformRowsToPoints(rows) {
-            return rows.map(r => ({ x: r.ts * 1000, y: r.humidity }));
-        }
-
         function updateHistogram(rows) {
             const humid = rows.map(r => r.humidity);
             const hist = buildHistogram(humid, 12);
@@ -240,7 +145,6 @@
         }
 
         function fetchHistoryRange(start, end, max_points=2000) {
-            // start,end in epoch seconds
             fetch(`/api/history?start=${start}&end=${end}&max_points=${max_points}`).then(r => r.json()).then(rows => {
                 document.getElementById('history_count').innerText = rows.length;
                 const pointsHum = rows.map(r => ({ x: r.ts * 1000, y: r.humidity }));
@@ -255,42 +159,72 @@
             }).catch(err => console.error(err));
         }
 
-        // Initial load: last RETENTION_DAYS days
-        function loadInitialHistory() {
+        function loadHistory() {
             const now = Math.floor(Date.now() / 1000);
             const start = now - (31 * 24 * 3600);
             fetchHistoryRange(start, now, 2000);
         }
 
-        // Refresh live values and history at reasonable intervals
-        setInterval(refreshData, 30 * 1000); // every 30s
-        setInterval(loadInitialHistory, 5 * 60 * 1000); // history refresh every 5 minutes
-        window.onload = () => { refreshData(); createCharts(); loadInitialHistory(); };
-
         function resetZoom() {
             if (chartTime && typeof chartTime.resetZoom === 'function') {
                 chartTime.resetZoom();
             }
-            loadInitialHistory();
+            loadHistory();
         }
 
-        // Buttons
         document.addEventListener('DOMContentLoaded', () => {
-            const btn = document.getElementById('reload_thresholds');
-            if (btn) {
-                btn.addEventListener('click', () => {
-                    fetch('/api/reload_thresholds', { method: 'POST' })
-                        .then(r => r.json())
-                        .then(j => alert('Thresholds neu geladen'))
-                        .catch(e => alert('Fehler beim Laden der Thresholds'));
-                });
-            }
+            const form = document.getElementById('settingsForm');
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const formData = new FormData(form);
+                const data = {};
+                for (const [key, value] of formData.entries()) {
+                    const num = parseFloat(value);
+                    data[key] = isNaN(num) ? value : num;
+                }
+
+                fetch('/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                })
+                    .then(r => r.json())
+                    .then(j => {
+                        if (!j.ok) {
+                            throw new Error(j.error || 'Speichern fehlgeschlagen');
+                        }
+                        alert('Einstellungen gespeichert!');
+                        refreshData();
+                    })
+                    .catch(e => alert('Fehler beim Speichern: ' + e));
+            });
+
+            const resetBtn = document.getElementById('reset_thresholds_defaults');
+            resetBtn.addEventListener('click', () => {
+                fetch('/api/reset_thresholds_defaults', { method: 'POST' })
+                    .then(r => r.json())
+                    .then(j => {
+                        if (!j.ok) {
+                            throw new Error(j.error || 'Zurücksetzen fehlgeschlagen');
+                        }
+                        alert('Schwellwerte auf Standard zurückgesetzt');
+                        refreshData();
+                    })
+                    .catch(e => alert('Fehler beim Zurücksetzen: ' + e));
+            });
+
+            refreshData();
+            createCharts();
+            loadHistory();
+            setInterval(refreshData, 30 * 1000);
+            setInterval(loadHistory, 5 * 60 * 1000);
         });
     </script>
 </head>
 <body>
     <div class="container">
         <h1>Terrariumsteuerung</h1>
+
         <div class="values">
             <h2>Aktuelle Werte</h2>
             <div class="row"><span>Temperatur:</span> <span id="temperature">-</span></div>
@@ -298,10 +232,14 @@
             <div class="row"><span>Lüfter RPM:</span> <span id="rpm">-</span></div>
             <div class="row"><span>Lüfter PWM:</span> <span id="fan_pwm">-</span></div>
             <div class="row"><span>Pumpenstatus:</span> <span id="pump_status">-</span></div>
+            <div class="row"><span>ESP32 Status:</span> <span id="esp_status" class="status-offline">-</span></div>
+            <div class="row"><span>ESP32 URL:</span> <span id="esp_url">-</span></div>
+            <div class="row"><span>Polling Intervall:</span> <span id="poll_interval">-</span></div>
         </div>
+
         <div class="form-section">
             <h2>Schwellwerte ändern</h2>
-            <form method="POST" action="/update">
+            <form id="settingsForm">
                 <label>Ziel-Feuchte Lüfter: <input type="number" step="0.1" name="FAN_TARGET_HUMIDITY" value="{{ data.FAN_TARGET_HUMIDITY }}"></label>
                 <label>Pumpe aktiv unter (%): <input type="number" step="0.1" name="PUMP_TRIGGER_HUMIDITY" value="{{ data.PUMP_TRIGGER_HUMIDITY }}"></label>
                 <label>Pumpen Not-Aus (%): <input type="number" step="0.1" name="PUMP_EMERGENCY_OFF" value="{{ data.PUMP_EMERGENCY_OFF }}"></label>
@@ -311,13 +249,13 @@
                 <label>Nachtmodus Ende (Stunde): <input type="number" name="NIGHT_END_HOUR" value="{{ data.NIGHT_END_HOUR }}"></label>
                 <br>
                 <button class="btn" type="submit">Speichern</button>
-                <button class="btn" type="button" id="reload_thresholds" style="margin-left:10px; background:#2196F3;">Thresholds neu laden</button>
+                <button class="btn" type="button" id="reset_thresholds_defaults" style="margin-left:10px; background:#2196F3;">Schwellwerte zurücksetzen</button>
             </form>
         </div>
 
         <div class="form-section">
             <h2>Historie</h2>
-            <div class="row"><span>Letzte Messungen:</span> <span id="history_count">-</span></div>
+            <div class="row"><span>Messpunkte:</span> <span id="history_count">-</span></div>
             <div style="margin-bottom:0.5em;"><button class="btn" type="button" onclick="resetZoom()">Zoom zurücksetzen</button></div>
             <div class="chart-container"><canvas id="chartTime"></canvas></div>
             <div class="chart-container hist"><canvas id="chartHistogram"></canvas></div>
