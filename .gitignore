@@ -1,6 +1,6 @@
-terrarium.db
+**/terrarium.db
 __pycache__/
 .vscode/
-.micropico
-Platine-backups/
-fp-info-cache
+**/.micropico
+**/Platine-backups/
+**/fp-info-cache
