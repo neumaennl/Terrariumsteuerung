@@ -15,7 +15,6 @@ import bme280_float
 # --- Thresholds (loaded from storage) ---
 FAN_TARGET_HUMIDITY = 80.0
 PUMP_TRIGGER_HUMIDITY = 60.0
-PUMP_EMERGENCY_OFF = 85.0
 PUMP_SPRAY_DURATION = 15
 PUMP_COOLDOWN_MINUTES = 15
 NIGHT_START_HOUR = 19
@@ -33,7 +32,6 @@ _last_spray_time = 0
 
 # --- RPM counter ---
 _rpm_pulses = 0
-_rpm_lock = False
 
 # --- Stops & Control ---
 _running = False
@@ -49,13 +47,12 @@ def _clamp_fan_target(value):
 
 def load_thresholds_from_config():
     """Load thresholds from config.json into memory."""
-    global FAN_TARGET_HUMIDITY, PUMP_TRIGGER_HUMIDITY, PUMP_EMERGENCY_OFF
-    global PUMP_SPRAY_DURATION, PUMP_COOLDOWN_MINUTES, NIGHT_START_HOUR, NIGHT_END_HOUR
+    global FAN_TARGET_HUMIDITY, PUMP_TRIGGER_HUMIDITY, PUMP_SPRAY_DURATION
+    global PUMP_COOLDOWN_MINUTES, NIGHT_START_HOUR, NIGHT_END_HOUR
     
     try:
         FAN_TARGET_HUMIDITY = _clamp_fan_target(get('FAN_TARGET_HUMIDITY', FAN_TARGET_HUMIDITY))
         PUMP_TRIGGER_HUMIDITY = float(get('PUMP_TRIGGER_HUMIDITY', PUMP_TRIGGER_HUMIDITY))
-        PUMP_EMERGENCY_OFF = float(get('PUMP_EMERGENCY_OFF', PUMP_EMERGENCY_OFF))
         PUMP_SPRAY_DURATION = int(get('PUMP_SPRAY_DURATION', PUMP_SPRAY_DURATION))
         PUMP_COOLDOWN_MINUTES = int(get('PUMP_COOLDOWN_MINUTES', PUMP_COOLDOWN_MINUTES))
         NIGHT_START_HOUR = int(get('NIGHT_START_HOUR', NIGHT_START_HOUR))
@@ -67,16 +64,14 @@ def load_thresholds_from_config():
 
 def set_threshold_value(name, value):
     """Set threshold and save to config.json."""
-    global FAN_TARGET_HUMIDITY, PUMP_TRIGGER_HUMIDITY, PUMP_EMERGENCY_OFF
-    global PUMP_SPRAY_DURATION, PUMP_COOLDOWN_MINUTES, NIGHT_START_HOUR, NIGHT_END_HOUR
+    global FAN_TARGET_HUMIDITY, PUMP_TRIGGER_HUMIDITY, PUMP_SPRAY_DURATION
+    global PUMP_COOLDOWN_MINUTES, NIGHT_START_HOUR, NIGHT_END_HOUR
     
     if name == 'FAN_TARGET_HUMIDITY':
         FAN_TARGET_HUMIDITY = _clamp_fan_target(value)
         value = FAN_TARGET_HUMIDITY
     elif name == 'PUMP_TRIGGER_HUMIDITY':
         PUMP_TRIGGER_HUMIDITY = float(value)
-    elif name == 'PUMP_EMERGENCY_OFF':
-        PUMP_EMERGENCY_OFF = float(value)
     elif name == 'PUMP_SPRAY_DURATION':
         PUMP_SPRAY_DURATION = int(value)
     elif name == 'PUMP_COOLDOWN_MINUTES':
@@ -95,8 +90,6 @@ def get_threshold_value(name):
         return FAN_TARGET_HUMIDITY
     elif name == 'PUMP_TRIGGER_HUMIDITY':
         return PUMP_TRIGGER_HUMIDITY
-    elif name == 'PUMP_EMERGENCY_OFF':
-        return PUMP_EMERGENCY_OFF
     elif name == 'PUMP_SPRAY_DURATION':
         return PUMP_SPRAY_DURATION
     elif name == 'PUMP_COOLDOWN_MINUTES':
@@ -114,7 +107,6 @@ def reset_thresholds_to_defaults():
     for key in (
         'FAN_TARGET_HUMIDITY',
         'PUMP_TRIGGER_HUMIDITY',
-        'PUMP_EMERGENCY_OFF',
         'PUMP_SPRAY_DURATION',
         'PUMP_COOLDOWN_MINUTES',
         'NIGHT_START_HOUR',
@@ -265,21 +257,15 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
             cooldown_sec = PUMP_COOLDOWN_MINUTES * 60
             
             if is_pump_on:
-                # Pump is currently running
-                if humidity >= PUMP_EMERGENCY_OFF:
-                    # Emergency off: humidity too high
+                duration_on = now - _last_spray_time
+                if duration_on >= PUMP_SPRAY_DURATION:
+                    # Spray time finished
                     pin_relay_pump.off()
-                    pump_status = _make_pump_status("NOT-AUS")
+                    pump_status = _make_pump_status("AUS")
                 else:
-                    duration_on = now - _last_spray_time
-                    if duration_on >= PUMP_SPRAY_DURATION:
-                        # Spray time finished
-                        pin_relay_pump.off()
-                        pump_status = _make_pump_status("AUS")
-                    else:
-                        # Still spraying
-                        remaining = int(PUMP_SPRAY_DURATION - duration_on)
-                        pump_status = _make_pump_status("AN", f"{remaining}s")
+                    # Still spraying
+                    remaining = int(PUMP_SPRAY_DURATION - duration_on)
+                    pump_status = _make_pump_status("AN", f"{remaining}s")
             else:
                 # Pump is off, decide if we should start
                 if is_night:

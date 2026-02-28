@@ -82,7 +82,6 @@ def get_api_data():
         'pump_status': ctrl.get_pump_status(),
         'FAN_TARGET_HUMIDITY': ctrl.get_threshold_value('FAN_TARGET_HUMIDITY'),
         'PUMP_TRIGGER_HUMIDITY': ctrl.get_threshold_value('PUMP_TRIGGER_HUMIDITY'),
-        'PUMP_EMERGENCY_OFF': ctrl.get_threshold_value('PUMP_EMERGENCY_OFF'),
         'PUMP_SPRAY_DURATION': ctrl.get_threshold_value('PUMP_SPRAY_DURATION'),
         'PUMP_COOLDOWN_MINUTES': ctrl.get_threshold_value('PUMP_COOLDOWN_MINUTES'),
         'NIGHT_START_HOUR': ctrl.get_threshold_value('NIGHT_START_HOUR'),

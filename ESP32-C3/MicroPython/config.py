@@ -50,7 +50,6 @@ DEFAULT_CONFIG = {
     
     # Pump settings
     'PUMP_TRIGGER_HUMIDITY': 60.0,
-    'PUMP_EMERGENCY_OFF': 85.0,
     'PUMP_SPRAY_DURATION': 15,      # seconds
     'PUMP_COOLDOWN_MINUTES': 15,
     'NIGHT_START_HOUR': 19,
