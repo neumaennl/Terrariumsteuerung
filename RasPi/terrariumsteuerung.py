@@ -124,7 +124,7 @@ def save_reading(ts, temperature, humidity, rpm, fan_pwm, pump_status):
     buffer_reading(ts, temperature, humidity, rpm, fan_pwm, pump_status)
 
 
-def get_history(limit=500, start=None, end=None, max_points=2000):
+def get_history(start=None, end=None, max_points=2000):
     """Fetch history. If start/end provided (epoch seconds), fetch that range.
     If the number of rows exceeds max_points, aggregate into time buckets to reduce points."""
     conn = _get_conn()
@@ -137,10 +137,6 @@ def get_history(limit=500, start=None, end=None, max_points=2000):
         params.extend([int(start), int(end)])
 
     query += ' ORDER BY ts ASC'
-
-    if start is None and end is None:
-        query += ' LIMIT ?'
-        params.append(int(limit))
 
     cur.execute(query, tuple(params))
     rows = cur.fetchall()

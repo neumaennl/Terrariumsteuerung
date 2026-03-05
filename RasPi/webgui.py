@@ -145,14 +145,10 @@ def api_data():
 def api_history():
     start = request.args.get('start', default=None, type=float)
     end = request.args.get('end', default=None, type=float)
-    limit = request.args.get('limit', default=500, type=int)
     max_points = request.args.get('max_points', default=2000, type=int)
 
     try:
-        if start is not None and end is not None:
-            data = terrariumsteuerung.get_history(start=start, end=end, max_points=max_points)
-        else:
-            data = terrariumsteuerung.get_history(limit=limit)
+        data = terrariumsteuerung.get_history(start=start, end=end, max_points=max_points)
     except Exception:
         logger.exception('Error fetching history')
         data = []
