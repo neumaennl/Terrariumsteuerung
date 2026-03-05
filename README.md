@@ -17,6 +17,24 @@ Dazu `terrarium.service` nach `/etc/systemd/system/` kopieren.
 Dann über `sudo systemctl daemon-reload` systemd neu laden.  
 Mit `sudo systemctl enable terrarium.service` den Dienst aktivieren (damit er beim hochfahren startet) und wenn gewünscht per `sudo systemctl start terrarium.service` sofort starten.
 
+Optional können für die Historie Umgebungsvariablen im Service gesetzt werden:
+
+- `TERRARIUM_RETENTION_DAYS` (Standard: `31`) löscht nur Daten, die älter als X Tage sind.
+- `TERRARIUM_RECENT_WINDOW_DAYS` (Standard: `3`) definiert, wie lange Daten in hoher Auflösung gespeichert werden.
+- `TERRARIUM_RECENT_RESOLUTION_SECONDS` (Standard: `30`) Auflösung innerhalb des Recent-Fensters.
+- `TERRARIUM_ARCHIVE_RESOLUTION_SECONDS` (Standard: `900`) Auflösung fuer ältere Daten.
+- `TERRARIUM_MAX_DB_ROWS` begrenzt die Gesamtzahl Datensaetze (Standard wird aus obigen Werten berechnet).
+
+Beispiel in `terrarium.service` unter `[Service]`:
+
+```ini
+Environment=TERRARIUM_RETENTION_DAYS=31
+Environment=TERRARIUM_RECENT_WINDOW_DAYS=3
+Environment=TERRARIUM_RECENT_RESOLUTION_SECONDS=30
+Environment=TERRARIUM_ARCHIVE_RESOLUTION_SECONDS=900
+Environment=TERRARIUM_MAX_DB_ROWS=12000
+```
+
 ## Abhängigkeiten
 
 - [offizieller SSD1306 Display Treiber](https://www.google.com/search?q=https://github.com/micropython/micropython/blob/master/drivers/display/ssd1306.py)
