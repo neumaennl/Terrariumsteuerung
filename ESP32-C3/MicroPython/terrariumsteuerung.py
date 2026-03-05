@@ -165,7 +165,7 @@ def is_night_time():
     return False
 
 
-async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_fan):
+async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_fan, pin_button_pump_override):
     """
     Main control loop: read sensors and control hardware.
     Runs periodically (every SAMPLE_INTERVAL seconds).
@@ -250,35 +250,41 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
                 pin_relay_fan.off()
             
             # --- D) Pump control ---
-            is_pump_on = pin_relay_pump.value()
-            pump_status = _make_pump_status("AUS")
-            is_night = is_night_time()
-            time_since_last = now - _last_spray_time
-            cooldown_sec = PUMP_COOLDOWN_MINUTES * 60
-            
-            if is_pump_on:
-                duration_on = now - _last_spray_time
-                if duration_on >= PUMP_SPRAY_DURATION:
-                    # Spray time finished
-                    pin_relay_pump.off()
-                    pump_status = _make_pump_status("AUS")
-                else:
-                    # Still spraying
-                    remaining = int(PUMP_SPRAY_DURATION - duration_on)
-                    pump_status = _make_pump_status("AN", f"{remaining}s")
+            # Button uses pull-up, so pressed = 0. Manual press always wins.
+            manual_override_active = (pin_button_pump_override.value() == 0)
+            if manual_override_active:
+                pin_relay_pump.on()
+                pump_status = _make_pump_status("MANUELL", "TASTER")
             else:
-                # Pump is off, decide if we should start
-                if is_night:
-                    pump_status = _make_pump_status("NACHT")
-                elif time_since_last < cooldown_sec:
-                    remaining = int((cooldown_sec - time_since_last) / 60)
-                    pump_status = _make_pump_status("PAUSE", f"{remaining}m")
-                elif humidity < PUMP_TRIGGER_HUMIDITY:
-                    pin_relay_pump.on()
-                    _last_spray_time = now
-                    pump_status = _make_pump_status("START")
+                is_pump_on = pin_relay_pump.value()
+                pump_status = _make_pump_status("AUS")
+                is_night = is_night_time()
+                time_since_last = now - _last_spray_time
+                cooldown_sec = PUMP_COOLDOWN_MINUTES * 60
+
+                if is_pump_on:
+                    duration_on = now - _last_spray_time
+                    if duration_on >= PUMP_SPRAY_DURATION:
+                        # Spray time finished
+                        pin_relay_pump.off()
+                        pump_status = _make_pump_status("AUS")
+                    else:
+                        # Still spraying
+                        remaining = int(PUMP_SPRAY_DURATION - duration_on)
+                        pump_status = _make_pump_status("AN", f"{remaining}s")
                 else:
-                    pump_status = _make_pump_status("BEREIT")
+                    # Pump is off, decide if we should start
+                    if is_night:
+                        pump_status = _make_pump_status("NACHT")
+                    elif time_since_last < cooldown_sec:
+                        remaining = int((cooldown_sec - time_since_last) / 60)
+                        pump_status = _make_pump_status("PAUSE", f"{remaining}m")
+                    elif humidity < PUMP_TRIGGER_HUMIDITY:
+                        pin_relay_pump.on()
+                        _last_spray_time = now
+                        pump_status = _make_pump_status("START")
+                    else:
+                        pump_status = _make_pump_status("BEREIT")
             
             # --- E) Update state for web API ---
             _current_temp = temp
@@ -323,6 +329,9 @@ async def run(i2c=None, oled=None):
     pin_relay_fan = machine.Pin(get('PIN_RELAY_FAN', 4), machine.Pin.OUT)
     pin_relay_pump = machine.Pin(get('PIN_RELAY_PUMP', 5), machine.Pin.OUT)
     pin_rpm_fan = machine.Pin(get('PIN_RPM_FAN', 3), machine.Pin.IN, machine.Pin.PULL_UP)
+    pin_button_pump_override = machine.Pin(
+        get('PIN_BUTTON_PUMP_OVERRIDE', 9), machine.Pin.IN, machine.Pin.PULL_UP
+    )
     
     # Ensure pump starts off
     pin_relay_pump.off()
@@ -335,7 +344,14 @@ async def run(i2c=None, oled=None):
     
     # Run control loop
     try:
-        await control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_fan)
+        await control_loop(
+            i2c,
+            pin_pwm_fan,
+            pin_relay_fan,
+            pin_relay_pump,
+            pin_rpm_fan,
+            pin_button_pump_override,
+        )
     finally:
         # Cleanup
         pin_pwm_fan.duty(0)

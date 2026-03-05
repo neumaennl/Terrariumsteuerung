@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
     'PIN_RPM_FAN': 4,          # GPIO4 for RPM input
     'PIN_RELAY_FAN': 2,        # GPIO2 for relay
     'PIN_RELAY_PUMP': 1,       # GPIO1 for pump relay
+    'PIN_BUTTON_PUMP_OVERRIDE': 9,  # GPIO9 button (active-low) for manual pump
     
     # I2C for BME280
     'I2C_PORT': 0,             # I2C port 0
