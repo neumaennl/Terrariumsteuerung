@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="history-recent-window-days" content="{{ history_config.recent_window_days }}">
+    <meta name="history-recent-resolution-seconds" content="{{ history_config.recent_resolution_seconds }}">
+    <meta name="history-archive-resolution-seconds" content="{{ history_config.archive_resolution_seconds }}">
     <title>Terrariumsteuerung</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 0; background: #f4f4f4; }
@@ -31,14 +34,96 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/luxon@3.7.2/build/global/luxon.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
     <script>
         let chartTime = null;
         let chartHistogram = null;
+        let fullRangeStart = null;
+        let fullRangeEnd = null;
+        let currentRangeStart = null;
+        let currentRangeEnd = null;
+        let historyRefreshTimer = null;
+
+        const SERIES_LABELS = Object.freeze({
+            humidity: 'Feuchte (%)',
+            temperature: 'Temperatur (°C)',
+            rpm: 'Luefter RPM',
+            pwm: 'Luefter PWM (%)',
+            pump: 'Pumpe AN/AUS',
+        });
+
+        // Rendering target for history requests.
+        // Example: 3 means ~1 data point per 3 horizontal pixels.
+        const HISTORY_PIXELS_PER_POINT = 10;
+        const HISTORY_MIN_POINTS = 50;
+        const HISTORY_MAX_POINTS = 12000;
+        const HISTORY_RECENT_WINDOW_DAYS = parseInt(document.querySelector('meta[name="history-recent-window-days"]')?.content || '3', 10);
+        const HISTORY_RECENT_RESOLUTION_SECONDS = parseInt(document.querySelector('meta[name="history-recent-resolution-seconds"]')?.content || '30', 10);
+        const HISTORY_ARCHIVE_RESOLUTION_SECONDS = parseInt(document.querySelector('meta[name="history-archive-resolution-seconds"]')?.content || '900', 10);
+
+        function debounce(fn, delayMs) {
+            let timer = null;
+            return function(...args) {
+                if (timer) {
+                    clearTimeout(timer);
+                }
+                timer = setTimeout(() => fn.apply(this, args), delayMs);
+            };
+        }
+
+        function rangeSeconds(start, end) {
+            return Math.max(1, Math.floor(Number(end) - Number(start)));
+        }
+
+        function adaptiveMaxPoints(start, end) {
+            const span = rangeSeconds(start, end);
+
+            // Width-based target: configurable points-per-pixel budget.
+            let target = 2400;
+            if (chartTime && chartTime.canvas && chartTime.canvas.clientWidth) {
+                target = Math.floor(chartTime.canvas.clientWidth / Math.max(1, HISTORY_PIXELS_PER_POINT));
+            }
+            if (target < HISTORY_MIN_POINTS) target = HISTORY_MIN_POINTS;
+            if (target > HISTORY_MAX_POINTS) target = HISTORY_MAX_POINTS;
+
+            return target;
+        }
+
+        function getVisibleRangeFromChart() {
+            if (!chartTime || !chartTime.scales || !chartTime.scales.x) {
+                return null;
+            }
+            const scale = chartTime.scales.x;
+            if (!Number.isFinite(scale.min) || !Number.isFinite(scale.max)) {
+                return null;
+            }
+            const start = Math.floor(scale.min / 1000);
+            const end = Math.floor(scale.max / 1000);
+            if (end <= start) {
+                return null;
+            }
+            return { start, end };
+        }
+
+        function isPumpRunning(pumpStatus) {
+            const status = String(pumpStatus || '').trim().toUpperCase();
+            if (!status) return null;
+            if (status.startsWith('AN') || status.startsWith('START') || status.startsWith('MANUELL')) {
+                return 1;
+            }
+            return 0;
+        }
 
         function refreshData() {
             fetch('/api/data').then(r => r.json()).then(data => {
+                const fmtBytes = (v) => {
+                    const n = Number(v);
+                    if (!Number.isFinite(n) || n < 0) return '-';
+                    if (n < 1024) return `${Math.round(n)} B`;
+                    return `${(n / 1024).toFixed(1)} KiB`;
+                };
+
                 document.getElementById('temperature').innerText = Number(data.temperature).toFixed(1) + ' °C';
                 document.getElementById('humidity').innerText = Number(data.humidity).toFixed(1) + ' %';
                 document.getElementById('rpm').innerText = data.rpm;
@@ -56,6 +141,10 @@
 
                 document.getElementById('poll_interval').innerText = data.poll_interval_seconds + ' s';
                 document.getElementById('esp_url').innerText = data.esp_base_url;
+                document.getElementById('esp_mem_free').innerText = fmtBytes(data.mem_free);
+                document.getElementById('esp_mem_alloc').innerText = fmtBytes(data.mem_alloc);
+                document.getElementById('esp_mem_free_min').innerText = fmtBytes(data.mem_free_min);
+                document.getElementById('esp_mem_sample').innerText = data.mem_last_sample_local || '-';
 
                 const form = document.getElementById('settingsForm');
                 ['FAN_TARGET_HUMIDITY','PUMP_TRIGGER_HUMIDITY','PUMP_SPRAY_DURATION','PUMP_COOLDOWN_MINUTES','NIGHT_START_HOUR','NIGHT_END_HOUR'].forEach(key => {
@@ -85,8 +174,11 @@
                 type: 'line',
                 data: {
                     datasets: [
-                        { label: 'Feuchte (%)', data: [], borderColor: 'rgba(54,162,235,1)', fill: false, parsing: { xAxisKey: 'x', yAxisKey: 'y' } },
-                        { label: 'Temperatur (°C)', data: [], borderColor: 'rgba(255,99,132,1)', fill: false, parsing: { xAxisKey: 'x', yAxisKey: 'y' } }
+                        { label: SERIES_LABELS.humidity, data: [], borderColor: 'rgba(54,162,235,1)', fill: false, yAxisID: 'yClimate', parsing: { xAxisKey: 'x', yAxisKey: 'y' } },
+                        { label: SERIES_LABELS.temperature, data: [], borderColor: 'rgba(255,99,132,1)', fill: false, yAxisID: 'yClimate', parsing: { xAxisKey: 'x', yAxisKey: 'y' } },
+                        { label: SERIES_LABELS.rpm, data: [], borderColor: 'rgba(255,159,64,1)', fill: false, yAxisID: 'yRpm', parsing: { xAxisKey: 'x', yAxisKey: 'y' } },
+                        { label: SERIES_LABELS.pwm, data: [], borderColor: 'rgba(75,192,192,1)', fill: false, yAxisID: 'yPercent', parsing: { xAxisKey: 'x', yAxisKey: 'y' } },
+                        { label: SERIES_LABELS.pump, data: [], borderColor: 'rgba(153,102,255,1)', stepped: true, pointRadius: 0, fill: false, yAxisID: 'yPump', parsing: { xAxisKey: 'x', yAxisKey: 'y' } }
                     ]
                 },
                 options: {
@@ -106,12 +198,37 @@
                             },
                             title: { display: true, text: 'Zeit' }
                         },
-                        y: { title: { display: true, text: 'Wert' } }
+                        yClimate: { type: 'linear', position: 'left', title: { display: true, text: 'Temp/Feuchte' } },
+                        yRpm: { type: 'linear', position: 'right', title: { display: true, text: 'RPM' }, grid: { drawOnChartArea: false } },
+                        yPercent: { type: 'linear', position: 'right', min: 0, max: 100, title: { display: true, text: 'PWM %' }, grid: { drawOnChartArea: false } },
+                        yPump: { type: 'linear', position: 'right', min: 0, max: 1, ticks: { stepSize: 1, callback: (v) => Number(v) >= 0.5 ? 'AN' : 'AUS' }, title: { display: true, text: 'Pumpe' }, grid: { drawOnChartArea: false } }
                     },
                     plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const label = context.dataset.label || '';
+                                    const value = context.parsed.y;
+                                    if (label === SERIES_LABELS.rpm) return `${label}: ${Math.round(value)}`;
+                                    if (label === SERIES_LABELS.pwm) return `${label}: ${Number(value).toFixed(0)} %`;
+                                    if (label === SERIES_LABELS.pump) return `${label}: ${Number(value) >= 0.5 ? 'AN' : 'AUS'}`;
+                                    if (label === SERIES_LABELS.humidity) return `${label}: ${Number(value).toFixed(1)} %`;
+                                    if (label === SERIES_LABELS.temperature) return `${label}: ${Number(value).toFixed(1)} °C`;
+                                    return `${label}: ${value}`;
+                                },
+                                afterBody: function(items) {
+                                    if (!items || items.length === 0) return [];
+                                    const pumpItem = items.find(i => (i.dataset && i.dataset.label) === SERIES_LABELS.pump);
+                                    if (!pumpItem) return [];
+                                    const raw = pumpItem.raw || {};
+                                    const status = raw.pump_status || 'unbekannt';
+                                    return [`Pumpenstatus: ${status}`];
+                                }
+                            }
+                        },
                         zoom: {
-                            pan: { enabled: true, mode: 'x', modifierKey: 'ctrl' },
-                            zoom: { wheel: { enabled: true }, pinch: { enabled: true }, drag: { enabled: true }, mode: 'x' }
+                            pan: { enabled: true, mode: 'x', onPanComplete: () => requestVisibleRangeHistory() },
+                            zoom: { wheel: { enabled: true }, pinch: { enabled: true }, drag: { enabled: true, modifierKey: 'shift' }, mode: 'x', onZoomComplete: () => requestVisibleRangeHistory() }
                         }
                     }
                 }
@@ -156,15 +273,35 @@
             }
         }
 
-        function fetchHistoryRange(start, end, max_points=2000) {
-            fetch(`/api/history?start=${start}&end=${end}&max_points=${max_points}`).then(r => r.json()).then(rows => {
+        function fetchHistoryRange(start, end, max_points=2000, preserveViewport=true) {
+            if (historyRefreshTimer) {
+                clearTimeout(historyRefreshTimer);
+                historyRefreshTimer = null;
+            }
+            const reqUrl = `/api/history?start=${start}&end=${end}&max_points=${max_points}&_=${Date.now()}`;
+            fetch(reqUrl).then(r => r.json()).then(rows => {
                 document.getElementById('history_count').innerText = rows.length;
-                const pointsHum = rows.map(r => ({ x: r.ts * 1000, y: r.humidity }));
-                const pointsTemp = rows.map(r => ({ x: r.ts * 1000, y: r.temperature }));
+                const pointsHum = rows.map(r => ({ x: r.ts * 1000, y: r.humidity, pump_status: r.pump_status }));
+                const pointsTemp = rows.map(r => ({ x: r.ts * 1000, y: r.temperature, pump_status: r.pump_status }));
+                const pointsRpm = rows.map(r => ({ x: r.ts * 1000, y: r.rpm, pump_status: r.pump_status }));
+                const pointsPwm = rows.map(r => ({ x: r.ts * 1000, y: r.fan_pwm, pump_status: r.pump_status }));
+                const pointsPump = rows.map(r => ({ x: r.ts * 1000, y: isPumpRunning(r.pump_status), pump_status: r.pump_status }));
 
                 if (chartTime) {
                     chartTime.data.datasets[0].data = pointsHum;
                     chartTime.data.datasets[1].data = pointsTemp;
+                    chartTime.data.datasets[2].data = pointsRpm;
+                    chartTime.data.datasets[3].data = pointsPwm;
+                    chartTime.data.datasets[4].data = pointsPump;
+
+                    if (preserveViewport) {
+                        chartTime.options.scales.x.min = start * 1000;
+                        chartTime.options.scales.x.max = end * 1000;
+                    } else {
+                        delete chartTime.options.scales.x.min;
+                        delete chartTime.options.scales.x.max;
+                    }
+
                     chartTime.update();
                 }
                 updateHistogram(rows);
@@ -172,9 +309,39 @@
         }
 
         function loadHistory() {
+            fullRangeEnd = Math.floor(Date.now() / 1000);
+            fullRangeStart = fullRangeEnd - (31 * 24 * 3600);
+            currentRangeStart = fullRangeStart;
+            currentRangeEnd = fullRangeEnd;
+            fetchHistoryRange(fullRangeStart, fullRangeEnd, adaptiveMaxPoints(fullRangeStart, fullRangeEnd), false);
+        }
+
+        const requestVisibleRangeHistory = debounce(() => {
+            const visible = getVisibleRangeFromChart();
+            if (!visible) {
+                return;
+            }
+
+            currentRangeStart = visible.start;
+            currentRangeEnd = visible.end;
+
+            const targetPoints = adaptiveMaxPoints(visible.start, visible.end);
+            fetchHistoryRange(visible.start, visible.end, targetPoints, true);
+        }, 250);
+
+        function refreshCurrentHistoryWindow() {
+            if (currentRangeStart === null || currentRangeEnd === null) {
+                loadHistory();
+                return;
+            }
+
             const now = Math.floor(Date.now() / 1000);
-            const start = now - (31 * 24 * 3600);
-            fetchHistoryRange(start, now, 2000);
+            if (currentRangeEnd > now) {
+                currentRangeEnd = now;
+            }
+
+            const targetPoints = adaptiveMaxPoints(currentRangeStart, currentRangeEnd);
+            fetchHistoryRange(currentRangeStart, currentRangeEnd, targetPoints, true);
         }
 
         function resetZoom() {
@@ -229,7 +396,7 @@
             createCharts();
             loadHistory();
             setInterval(refreshData, 30 * 1000);
-            setInterval(loadHistory, 5 * 60 * 1000);
+            setInterval(refreshCurrentHistoryWindow, 5 * 60 * 1000);
         });
     </script>
 </head>
@@ -244,9 +411,13 @@
             <div class="row"><span>Lüfter RPM:</span> <span id="rpm">-</span></div>
             <div class="row"><span>Lüfter PWM:</span> <span id="fan_pwm">-</span></div>
             <div class="row"><span>Pumpenstatus:</span> <span id="pump_status">-</span></div>
-            <div class="row"><span>ESP32 Status:</span> <span id="esp_status" class="status-offline">-</span></div>
-            <div class="row"><span>ESP32 URL:</span> <span id="esp_url">-</span></div>
+            <div class="row"><span>ESP32-C3 Status:</span> <span id="esp_status" class="status-offline">-</span></div>
+            <div class="row"><span>ESP32-C3 URL:</span> <span id="esp_url">-</span></div>
             <div class="row"><span>Polling Intervall:</span> <span id="poll_interval">-</span></div>
+            <div class="row"><span>ESP32-C3 RAM frei:</span> <span id="esp_mem_free">-</span></div>
+            <div class="row"><span>ESP32-C3 RAM belegt:</span> <span id="esp_mem_alloc">-</span></div>
+            <div class="row"><span>ESP32-C3 RAM Minimum:</span> <span id="esp_mem_free_min">-</span></div>
+            <div class="row"><span>ESP32-C3 RAM Messzeit:</span> <span id="esp_mem_sample">-</span></div>
         </div>
 
         <div class="form-section">

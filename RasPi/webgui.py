@@ -36,6 +36,11 @@ def _default_data():
         'NIGHT_START_HOUR': 19,
         'NIGHT_END_HOUR': 8,
         'timestamp': terrariumsteuerung.now_ts(),
+        'mem_free': -1,
+        'mem_alloc': -1,
+        'mem_free_min': -1,
+        'mem_last_sample': 0,
+        'mem_last_sample_local': '',
         'esp_online': False,
         'esp_error': 'Noch keine Daten vom ESP empfangen',
     }
@@ -98,7 +103,12 @@ def poller_loop():
 
 @app.route('/')
 def index():
-    return render_template('index.html', data=_get_snapshot())
+    history_config = {
+        'recent_window_days': int(getattr(terrariumsteuerung, 'RECENT_WINDOW_DAYS', 3)),
+        'recent_resolution_seconds': int(getattr(terrariumsteuerung, 'RECENT_RESOLUTION_SECONDS', 30)),
+        'archive_resolution_seconds': int(getattr(terrariumsteuerung, 'ARCHIVE_RESOLUTION_SECONDS', 900)),
+    }
+    return render_template('index.html', data=_get_snapshot(), history_config=history_config)
 
 
 @app.route('/update', methods=['POST'])

@@ -80,17 +80,40 @@ def _compact_old_readings(cur, now=None):
 
     cur.execute(
         '''
+        WITH bucketed AS (
+            SELECT
+                (ts / ?) * ? AS bucket_ts,
+                ts,
+                temperature,
+                humidity,
+                rpm,
+                fan_pwm,
+                pump_status
+            FROM readings
+            WHERE ts < ?
+        ),
+        agg AS (
+            SELECT
+                bucket_ts,
+                AVG(temperature) AS temperature,
+                AVG(humidity) AS humidity,
+                CAST(AVG(rpm) AS INTEGER) AS rpm,
+                CAST(AVG(fan_pwm) AS INTEGER) AS fan_pwm
+            FROM bucketed
+            GROUP BY bucket_ts
+        )
         SELECT
-            (ts / ?) * ? AS bucket_ts,
-            AVG(temperature) AS temperature,
-            AVG(humidity) AS humidity,
-            CAST(AVG(rpm) AS INTEGER) AS rpm,
-            CAST(AVG(fan_pwm) AS INTEGER) AS fan_pwm,
-            '' AS pump_status
-        FROM readings
-        WHERE ts < ?
-        GROUP BY bucket_ts
-        ORDER BY bucket_ts ASC
+            agg.bucket_ts AS ts,
+            agg.temperature,
+            agg.humidity,
+            agg.rpm,
+            agg.fan_pwm,
+            COALESCE(
+                (SELECT b2.pump_status FROM bucketed b2 WHERE b2.bucket_ts = agg.bucket_ts ORDER BY b2.ts DESC LIMIT 1),
+                ''
+            ) AS pump_status
+        FROM agg
+        ORDER BY agg.bucket_ts ASC
         ''',
         (ARCHIVE_RESOLUTION_SECONDS, ARCHIVE_RESOLUTION_SECONDS, cutoff),
     )
@@ -232,76 +255,200 @@ def save_reading(ts, temperature, humidity, rpm, fan_pwm, pump_status):
     buffer_reading(ts, temperature, humidity, rpm, fan_pwm, pump_status)
 
 
+def _round_up_to_multiple(value, base):
+    value = int(value)
+    base = max(1, int(base))
+    return ((value + base - 1) // base) * base
+
+
+def _fetch_segment_rows(cur, seg_start, seg_end, point_budget, min_step_seconds):
+    """Fetch one segment either raw or time-bucketed according to its budget."""
+    if point_budget < 1:
+        point_budget = 1
+
+    cur.execute('SELECT COUNT(*) FROM readings WHERE ts BETWEEN ? AND ?', (seg_start, seg_end))
+    row_count = int(cur.fetchone()[0])
+    if row_count <= 0:
+        return []
+
+    cur.execute('SELECT MIN(ts), MAX(ts) FROM readings WHERE ts BETWEEN ? AND ?', (seg_start, seg_end))
+    min_max = cur.fetchone()
+    if not min_max or min_max[0] is None or min_max[1] is None:
+        return []
+    data_min_ts = int(min_max[0])
+    data_max_ts = int(min_max[1])
+
+    if row_count <= point_budget:
+        cur.execute(
+            'SELECT ts, temperature, humidity, rpm, fan_pwm, pump_status FROM readings WHERE ts BETWEEN ? AND ? ORDER BY ts ASC',
+            (seg_start, seg_end),
+        )
+        return cur.fetchall()
+
+    # Use actual data span, not requested range span, so large empty windows
+    # do not force overly coarse buckets.
+    seg_span = max(1, data_max_ts - data_min_ts + 1)
+    needed_step = (seg_span + point_budget - 1) // point_budget
+    bucket_seconds = _round_up_to_multiple(max(needed_step, min_step_seconds), min_step_seconds)
+
+    cur.execute(
+        '''
+        WITH bucketed AS (
+            SELECT
+                (ts / ?) * ? AS bucket_ts,
+                ts,
+                temperature,
+                humidity,
+                rpm,
+                fan_pwm,
+                pump_status
+            FROM readings
+            WHERE ts BETWEEN ? AND ?
+        ),
+        agg AS (
+            SELECT
+                bucket_ts,
+                AVG(temperature) AS temperature,
+                AVG(humidity) AS humidity,
+                CAST(AVG(rpm) AS INTEGER) AS rpm,
+                CAST(AVG(fan_pwm) AS INTEGER) AS fan_pwm
+            FROM bucketed
+            GROUP BY bucket_ts
+        )
+        SELECT
+            agg.bucket_ts AS ts,
+            agg.temperature,
+            agg.humidity,
+            agg.rpm,
+            agg.fan_pwm,
+            COALESCE(
+                (SELECT b2.pump_status FROM bucketed b2 WHERE b2.bucket_ts = agg.bucket_ts ORDER BY b2.ts DESC LIMIT 1),
+                ''
+            ) AS pump_status
+        FROM agg
+        ORDER BY agg.bucket_ts ASC
+        ''',
+        (bucket_seconds, bucket_seconds, seg_start, seg_end),
+    )
+    return cur.fetchall()
+
+
 def get_history(start=None, end=None, max_points=2000):
-    """Fetch history. If start/end provided (epoch seconds), fetch that range.
-    If the number of rows exceeds max_points, aggregate into time buckets to reduce points."""
+    """Fetch history and downsample while preserving archive/recent tier behavior."""
     conn = _get_conn()
     cur = conn.cursor()
-    params = []
-    query = 'SELECT ts, temperature, humidity, rpm, fan_pwm, pump_status FROM readings'
+    try:
+        if max_points is None:
+            max_points = 2000
+        max_points = int(max_points)
+        if max_points < 1:
+            max_points = 1
+        if max_points > 50000:
+            max_points = 50000
 
-    if start is not None and end is not None:
-        query += ' WHERE ts BETWEEN ? AND ?'
-        params.extend([int(start), int(end)])
+        # Resolve time window: explicit request or full DB range.
+        if start is not None and end is not None:
+            start_ts = int(start)
+            end_ts = int(end)
+            if end_ts < start_ts:
+                start_ts, end_ts = end_ts, start_ts
+        else:
+            cur.execute('SELECT MIN(ts), MAX(ts) FROM readings')
+            row = cur.fetchone()
+            if not row or row[0] is None or row[1] is None:
+                return []
+            start_ts = int(row[0])
+            end_ts = int(row[1])
 
-    query += ' ORDER BY ts ASC'
+        if end_ts < start_ts:
+            return []
 
-    cur.execute(query, tuple(params))
-    rows = cur.fetchall()
-    conn.close()
+        # Split range so recent and archive data can be downsampled with different minimum steps.
+        now = int(time.time())
+        recent_cutoff = now - (RECENT_WINDOW_DAYS * 86400)
 
-    # If too many, aggregate into buckets
-    if max_points and len(rows) > max_points and start is not None and end is not None and end > start:
-        bucket_size = int((end - start) / max_points) + 1
-        buckets = {}
-        for row in rows:
-            ts = int(row[0])
-            idx = (ts - int(start)) // bucket_size
-            bucket = buckets.setdefault(
-                idx,
-                {
-                    'ts_sum': 0,
-                    'count': 0,
-                    'temp_sum': 0.0,
-                    'hum_sum': 0.0,
-                    'rpm_sum': 0,
-                    'fan_sum': 0,
-                },
+        archive_range = None
+        if start_ts < recent_cutoff:
+            archive_end = min(end_ts, recent_cutoff - 1)
+            if archive_end >= start_ts:
+                archive_range = (start_ts, archive_end)
+
+        recent_range = None
+        if end_ts >= recent_cutoff:
+            recent_start = max(start_ts, recent_cutoff)
+            if end_ts >= recent_start:
+                recent_range = (recent_start, end_ts)
+
+        cur.execute('SELECT COUNT(*) FROM readings WHERE ts BETWEEN ? AND ?', (start_ts, end_ts))
+        total_rows = int(cur.fetchone()[0])
+        if total_rows <= 0:
+            return []
+
+        # No downsampling needed.
+        if total_rows <= max_points:
+            cur.execute(
+                'SELECT ts, temperature, humidity, rpm, fan_pwm, pump_status FROM readings WHERE ts BETWEEN ? AND ? ORDER BY ts ASC',
+                (start_ts, end_ts),
             )
-            bucket['ts_sum'] += ts
-            bucket['temp_sum'] += row[1]
-            bucket['hum_sum'] += row[2]
-            bucket['rpm_sum'] += row[3]
-            bucket['fan_sum'] += row[4]
-            bucket['count'] += 1
+            rows = cur.fetchall()
+        else:
+            segments = []
+            for seg_name, seg in [('archive', archive_range), ('recent', recent_range)]:
+                if seg is None:
+                    continue
+                cur.execute('SELECT COUNT(*) FROM readings WHERE ts BETWEEN ? AND ?', seg)
+                seg_count = int(cur.fetchone()[0])
+                if seg_count > 0:
+                    segments.append((seg_name, seg, seg_count))
 
-        result = []
-        for idx in sorted(buckets.keys()):
-            bucket = buckets[idx]
-            count = bucket['count']
-            result.append(
-                {
-                    'ts': int(bucket['ts_sum'] / count),
-                    'temperature': bucket['temp_sum'] / count,
-                    'humidity': bucket['hum_sum'] / count,
-                    'rpm': int(bucket['rpm_sum'] / count),
-                    'fan_pwm': int(bucket['fan_sum'] / count),
-                    'pump_status': '',
-                }
-            )
-        return result
+            if not segments:
+                return []
 
-    return [
-        {
-            'ts': row[0],
-            'temperature': row[1],
-            'humidity': row[2],
-            'rpm': row[3],
-            'fan_pwm': row[4],
-            'pump_status': row[5],
-        }
-        for row in rows
-    ]
+            # Distribute point budget proportional to rows per segment, at least one each.
+            budgets = []
+            assigned = 0
+            for seg_name, seg, seg_count in segments:
+                budget = (max_points * seg_count) // total_rows
+                if budget < 1:
+                    budget = 1
+                budgets.append([seg_name, seg, seg_count, budget])
+                assigned += budget
+
+            # Trim excess budgets from largest segments first.
+            while assigned > max_points and budgets:
+                idx = max(range(len(budgets)), key=lambda i: budgets[i][2])
+                if budgets[idx][3] > 1:
+                    budgets[idx][3] -= 1
+                    assigned -= 1
+                else:
+                    break
+
+            # Add missing budget slots to largest segments first.
+            while assigned < max_points and budgets:
+                idx = max(range(len(budgets)), key=lambda i: budgets[i][2])
+                budgets[idx][3] += 1
+                assigned += 1
+
+            rows = []
+            for seg_name, seg, _seg_count, budget in budgets:
+                min_step = ARCHIVE_RESOLUTION_SECONDS if seg_name == 'archive' else RECENT_RESOLUTION_SECONDS
+                rows.extend(_fetch_segment_rows(cur, seg[0], seg[1], budget, min_step))
+
+            rows.sort(key=lambda r: int(r[0]))
+
+        return [
+            {
+                'ts': int(row[0]),
+                'temperature': float(row[1]),
+                'humidity': float(row[2]),
+                'rpm': int(row[3]),
+                'fan_pwm': int(row[4]),
+                'pump_status': row[5],
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
 
 
 def _request_json(url, method='GET', payload=None, timeout=5):
