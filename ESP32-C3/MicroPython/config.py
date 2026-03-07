@@ -46,6 +46,7 @@ DEFAULT_CONFIG = {
     
     # Fan settings
     'FAN_TARGET_HUMIDITY': 80.0,
+    'FAN_SHUTOFF_HUMIDITY': 75.0,
     'FAN_PWM_FREQ': 5000,      # ESP32 PWM frequency (Hz)
     'RPM_AVG_WINDOW_SECONDS': 2,  # RPM averaging window (seconds)
     

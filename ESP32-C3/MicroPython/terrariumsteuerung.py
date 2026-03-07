@@ -14,6 +14,7 @@ import bme280_float
 
 # --- Thresholds (loaded from storage) ---
 FAN_TARGET_HUMIDITY = 80.0
+FAN_SHUTOFF_HUMIDITY = 75.0
 PUMP_TRIGGER_HUMIDITY = 60.0
 PUMP_SPRAY_DURATION = 15
 PUMP_COOLDOWN_MINUTES = 15
@@ -47,11 +48,12 @@ def _clamp_fan_target(value):
 
 def load_thresholds_from_config():
     """Load thresholds from config.json into memory."""
-    global FAN_TARGET_HUMIDITY, PUMP_TRIGGER_HUMIDITY, PUMP_SPRAY_DURATION
+    global FAN_TARGET_HUMIDITY, FAN_SHUTOFF_HUMIDITY, PUMP_TRIGGER_HUMIDITY, PUMP_SPRAY_DURATION
     global PUMP_COOLDOWN_MINUTES, NIGHT_START_HOUR, NIGHT_END_HOUR
     
     try:
         FAN_TARGET_HUMIDITY = _clamp_fan_target(get('FAN_TARGET_HUMIDITY', FAN_TARGET_HUMIDITY))
+        FAN_SHUTOFF_HUMIDITY = float(get('FAN_SHUTOFF_HUMIDITY', FAN_SHUTOFF_HUMIDITY))
         PUMP_TRIGGER_HUMIDITY = float(get('PUMP_TRIGGER_HUMIDITY', PUMP_TRIGGER_HUMIDITY))
         PUMP_SPRAY_DURATION = int(get('PUMP_SPRAY_DURATION', PUMP_SPRAY_DURATION))
         PUMP_COOLDOWN_MINUTES = int(get('PUMP_COOLDOWN_MINUTES', PUMP_COOLDOWN_MINUTES))
@@ -70,6 +72,9 @@ def set_threshold_value(name, value):
     if name == 'FAN_TARGET_HUMIDITY':
         FAN_TARGET_HUMIDITY = _clamp_fan_target(value)
         value = FAN_TARGET_HUMIDITY
+    elif name == 'FAN_SHUTOFF_HUMIDITY':
+        FAN_SHUTOFF_HUMIDITY = float(value)
+        value = FAN_SHUTOFF_HUMIDITY
     elif name == 'PUMP_TRIGGER_HUMIDITY':
         PUMP_TRIGGER_HUMIDITY = float(value)
     elif name == 'PUMP_SPRAY_DURATION':
@@ -88,6 +93,8 @@ def get_threshold_value(name):
     """Get current threshold value."""
     if name == 'FAN_TARGET_HUMIDITY':
         return FAN_TARGET_HUMIDITY
+    elif name == 'FAN_SHUTOFF_HUMIDITY':
+        return FAN_SHUTOFF_HUMIDITY
     elif name == 'PUMP_TRIGGER_HUMIDITY':
         return PUMP_TRIGGER_HUMIDITY
     elif name == 'PUMP_SPRAY_DURATION':
@@ -106,6 +113,7 @@ def reset_thresholds_to_defaults():
     defaults = config.DEFAULT_CONFIG
     for key in (
         'FAN_TARGET_HUMIDITY',
+        'FAN_SHUTOFF_HUMIDITY',
         'PUMP_TRIGGER_HUMIDITY',
         'PUMP_SPRAY_DURATION',
         'PUMP_COOLDOWN_MINUTES',
@@ -245,7 +253,7 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
             if fan_pwm_val > 0:
                 pin_relay_fan.on()
                 pin_pwm_fan.duty(pwm_duty)
-            else:
+            elif humidity <= FAN_SHUTOFF_HUMIDITY:
                 pin_pwm_fan.duty(0)
                 pin_relay_fan.off()
             
