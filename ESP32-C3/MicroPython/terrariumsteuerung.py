@@ -250,7 +250,9 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
             # Convert to 0-1023 for ESP32 PWM
             pwm_duty = int((fan_pwm_val / 100.0) * 1023)
             
-            if fan_pwm_val > 0:
+            is_night = is_night_time()
+
+            if fan_pwm_val > 0 and not is_night:
                 pin_relay_fan.on()
                 pin_pwm_fan.duty(pwm_duty)
             elif humidity <= FAN_SHUTOFF_HUMIDITY:
@@ -266,7 +268,6 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
             else:
                 is_pump_on = pin_relay_pump.value()
                 pump_status = _make_pump_status("AUS")
-                is_night = is_night_time()
                 time_since_last = now - _last_spray_time
                 cooldown_sec = PUMP_COOLDOWN_MINUTES * 60
 
