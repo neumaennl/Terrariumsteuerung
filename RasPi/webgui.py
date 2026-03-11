@@ -29,12 +29,14 @@ def _default_data():
         'fan_pwm': 0,
         'pump_status': 'INIT',
         'FAN_TARGET_HUMIDITY': 80.0,
+        'FAN_NIGHT_START_HOUR': 21,
+        'FAN_NIGHT_END_HOUR': 7,
         'PUMP_TRIGGER_HUMIDITY': 60.0,
         'PUMP_EMERGENCY_OFF': 85.0,
         'PUMP_SPRAY_DURATION': 15,
         'PUMP_COOLDOWN_MINUTES': 15,
-        'NIGHT_START_HOUR': 19,
-        'NIGHT_END_HOUR': 8,
+        'PUMP_NIGHT_START_HOUR': 19,
+        'PUMP_NIGHT_END_HOUR': 8,
         'timestamp': terrariumsteuerung.now_ts(),
         'mem_free': -1,
         'mem_alloc': -1,
@@ -116,12 +118,14 @@ def update():
     payload = {}
     keys = [
         'FAN_TARGET_HUMIDITY',
+        'FAN_NIGHT_START_HOUR',
+        'FAN_NIGHT_END_HOUR',
         'PUMP_TRIGGER_HUMIDITY',
         'PUMP_EMERGENCY_OFF',
         'PUMP_SPRAY_DURATION',
         'PUMP_COOLDOWN_MINUTES',
-        'NIGHT_START_HOUR',
-        'NIGHT_END_HOUR',
+        'PUMP_NIGHT_START_HOUR',
+        'PUMP_NIGHT_END_HOUR',
     ]
 
     for key in keys:

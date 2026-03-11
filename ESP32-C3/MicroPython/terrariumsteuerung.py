@@ -15,11 +15,13 @@ import bme280_float
 # --- Thresholds (loaded from storage) ---
 FAN_TARGET_HUMIDITY = 80.0
 FAN_SHUTOFF_HUMIDITY = 75.0
+FAN_NIGHT_START_HOUR = 21
+FAN_NIGHT_END_HOUR = 7
 PUMP_TRIGGER_HUMIDITY = 60.0
 PUMP_SPRAY_DURATION = 15
 PUMP_COOLDOWN_MINUTES = 15
-NIGHT_START_HOUR = 19
-NIGHT_END_HOUR = 8
+PUMP_NIGHT_START_HOUR = 19
+PUMP_NIGHT_END_HOUR = 8
 
 # --- Current state for web API ---
 _current_temp = 0.0
@@ -49,7 +51,7 @@ def _clamp_fan_target(value):
 def load_thresholds_from_config():
     """Load thresholds from config.json into memory."""
     global FAN_TARGET_HUMIDITY, FAN_SHUTOFF_HUMIDITY, PUMP_TRIGGER_HUMIDITY, PUMP_SPRAY_DURATION
-    global PUMP_COOLDOWN_MINUTES, NIGHT_START_HOUR, NIGHT_END_HOUR
+    global PUMP_COOLDOWN_MINUTES, PUMP_NIGHT_START_HOUR, PUMP_NIGHT_END_HOUR
     
     try:
         FAN_TARGET_HUMIDITY = _clamp_fan_target(get('FAN_TARGET_HUMIDITY', FAN_TARGET_HUMIDITY))
@@ -57,8 +59,8 @@ def load_thresholds_from_config():
         PUMP_TRIGGER_HUMIDITY = float(get('PUMP_TRIGGER_HUMIDITY', PUMP_TRIGGER_HUMIDITY))
         PUMP_SPRAY_DURATION = int(get('PUMP_SPRAY_DURATION', PUMP_SPRAY_DURATION))
         PUMP_COOLDOWN_MINUTES = int(get('PUMP_COOLDOWN_MINUTES', PUMP_COOLDOWN_MINUTES))
-        NIGHT_START_HOUR = int(get('NIGHT_START_HOUR', NIGHT_START_HOUR))
-        NIGHT_END_HOUR = int(get('NIGHT_END_HOUR', NIGHT_END_HOUR))
+        PUMP_NIGHT_START_HOUR = int(get('PUMP_NIGHT_START_HOUR', PUMP_NIGHT_START_HOUR))
+        PUMP_NIGHT_END_HOUR = int(get('PUMP_NIGHT_END_HOUR', PUMP_NIGHT_END_HOUR))
         print("[CTRL] Thresholds loaded from config.json")
     except Exception as e:
         print(f"[CTRL] Error loading thresholds: {e}")
@@ -67,7 +69,7 @@ def load_thresholds_from_config():
 def set_threshold_value(name, value):
     """Set threshold and save to config.json."""
     global FAN_TARGET_HUMIDITY, PUMP_TRIGGER_HUMIDITY, PUMP_SPRAY_DURATION
-    global PUMP_COOLDOWN_MINUTES, NIGHT_START_HOUR, NIGHT_END_HOUR
+    global PUMP_COOLDOWN_MINUTES, PUMP_NIGHT_START_HOUR, PUMP_NIGHT_END_HOUR
     
     if name == 'FAN_TARGET_HUMIDITY':
         FAN_TARGET_HUMIDITY = _clamp_fan_target(value)
@@ -81,10 +83,10 @@ def set_threshold_value(name, value):
         PUMP_SPRAY_DURATION = int(value)
     elif name == 'PUMP_COOLDOWN_MINUTES':
         PUMP_COOLDOWN_MINUTES = int(value)
-    elif name == 'NIGHT_START_HOUR':
-        NIGHT_START_HOUR = int(value)
-    elif name == 'NIGHT_END_HOUR':
-        NIGHT_END_HOUR = int(value)
+    elif name == 'PUMP_NIGHT_START_HOUR':
+        PUMP_NIGHT_START_HOUR = int(value)
+    elif name == 'PUMP_NIGHT_END_HOUR':
+        PUMP_NIGHT_END_HOUR = int(value)
     
     config.set(name, value)
 
@@ -101,10 +103,10 @@ def get_threshold_value(name):
         return PUMP_SPRAY_DURATION
     elif name == 'PUMP_COOLDOWN_MINUTES':
         return PUMP_COOLDOWN_MINUTES
-    elif name == 'NIGHT_START_HOUR':
-        return NIGHT_START_HOUR
-    elif name == 'NIGHT_END_HOUR':
-        return NIGHT_END_HOUR
+    elif name == 'PUMP_NIGHT_START_HOUR':
+        return PUMP_NIGHT_START_HOUR
+    elif name == 'PUMP_NIGHT_END_HOUR':
+        return PUMP_NIGHT_END_HOUR
     return None
 
 
@@ -117,8 +119,8 @@ def reset_thresholds_to_defaults():
         'PUMP_TRIGGER_HUMIDITY',
         'PUMP_SPRAY_DURATION',
         'PUMP_COOLDOWN_MINUTES',
-        'NIGHT_START_HOUR',
-        'NIGHT_END_HOUR',
+        'PUMP_NIGHT_START_HOUR',
+        'PUMP_NIGHT_END_HOUR',
     ):
         if key in defaults:
             set_threshold_value(key, defaults[key])
@@ -165,10 +167,18 @@ def rpm_callback(pin):
     _rpm_pulses += 1
 
 
-def is_night_time():
-    """Check if current hour is within night time range."""
+def is_fan_night_time():
+    """Check if current hour is within night time range for the fan."""
     hour = get_current_hour()
-    if hour >= NIGHT_START_HOUR or hour < NIGHT_END_HOUR:
+    if hour >= FAN_NIGHT_START_HOUR or hour < FAN_NIGHT_END_HOUR:
+        return True
+    return False
+
+
+def is_pump_night_time():
+    """Check if current hour is within night time range for the pump."""
+    hour = get_current_hour()
+    if hour >= PUMP_NIGHT_START_HOUR or hour < PUMP_NIGHT_END_HOUR:
         return True
     return False
 
@@ -249,10 +259,8 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
             
             # Convert to 0-1023 for ESP32 PWM
             pwm_duty = int((fan_pwm_val / 100.0) * 1023)
-            
-            is_night = is_night_time()
 
-            if fan_pwm_val > 0 and not is_night:
+            if fan_pwm_val > 0 and not is_fan_night_time():
                 pin_relay_fan.on()
                 pin_pwm_fan.duty(pwm_duty)
             elif humidity <= FAN_SHUTOFF_HUMIDITY:
@@ -283,7 +291,7 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
                         pump_status = _make_pump_status("AN", f"{remaining}s")
                 else:
                     # Pump is off, decide if we should start
-                    if is_night:
+                    if is_pump_night_time():
                         pump_status = _make_pump_status("NACHT")
                     elif time_since_last < cooldown_sec:
                         remaining = int((cooldown_sec - time_since_last) / 60)

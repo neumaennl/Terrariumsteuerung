@@ -147,7 +147,16 @@
                 document.getElementById('esp_mem_sample').innerText = data.mem_last_sample_local || '-';
 
                 const form = document.getElementById('settingsForm');
-                ['FAN_TARGET_HUMIDITY','PUMP_TRIGGER_HUMIDITY','PUMP_SPRAY_DURATION','PUMP_COOLDOWN_MINUTES','NIGHT_START_HOUR','NIGHT_END_HOUR'].forEach(key => {
+                [
+                    'FAN_TARGET_HUMIDITY',
+                    'FAN_NIGHT_START_HOUR',
+                    'FAN_NIGHT_END_HOUR',
+                    'PUMP_TRIGGER_HUMIDITY',
+                    'PUMP_SPRAY_DURATION',
+                    'PUMP_COOLDOWN_MINUTES',
+                    'PUMP_NIGHT_START_HOUR',
+                    'PUMP_NIGHT_END_HOUR'
+                ].forEach(key => {
                     if (form.elements[key] && data[key] !== undefined && data[key] !== null) {
                         form.elements[key].value = data[key];
                     }
@@ -424,11 +433,13 @@
             <h2>Schwellwerte ändern</h2>
             <form id="settingsForm">
                 <label>Ziel-Feuchte Lüfter: <input type="number" step="0.1" name="FAN_TARGET_HUMIDITY" value="{{ data.FAN_TARGET_HUMIDITY }}"></label>
+                <label>Nachtmodus Lüfter Start (Stunde): <input type="number" name="FAN_NIGHT_START_HOUR" value="{{ data.FAN_NIGHT_START_HOUR }}"></label>
+                <label>Nachtmodus Lüfter Ende (Stunde): <input type="number" name="FAN_NIGHT_END_HOUR" value="{{ data.FAN_NIGHT_END_HOUR }}"></label>
                 <label>Pumpe aktiv unter (%): <input type="number" step="0.1" name="PUMP_TRIGGER_HUMIDITY" value="{{ data.PUMP_TRIGGER_HUMIDITY }}"></label>
                 <label>Sprühdauer (Sekunden): <input type="number" name="PUMP_SPRAY_DURATION" value="{{ data.PUMP_SPRAY_DURATION }}"></label>
                 <label>Cooldown (Minuten): <input type="number" name="PUMP_COOLDOWN_MINUTES" value="{{ data.PUMP_COOLDOWN_MINUTES }}"></label>
-                <label>Nachtmodus Start (Stunde): <input type="number" name="NIGHT_START_HOUR" value="{{ data.NIGHT_START_HOUR }}"></label>
-                <label>Nachtmodus Ende (Stunde): <input type="number" name="NIGHT_END_HOUR" value="{{ data.NIGHT_END_HOUR }}"></label>
+                <label>Nachtmodus Pumpe Start (Stunde): <input type="number" name="PUMP_NIGHT_START_HOUR" value="{{ data.PUMP_NIGHT_START_HOUR }}"></label>
+                <label>Nachtmodus Pumpe Ende (Stunde): <input type="number" name="PUMP_NIGHT_END_HOUR" value="{{ data.PUMP_NIGHT_END_HOUR }}"></label>
                 <br>
                 <button class="btn" type="submit">Speichern</button>
                 <button class="btn" type="button" id="reset_thresholds_defaults" style="margin-left:10px; background:#2196F3;">Schwellwerte zurücksetzen</button>

@@ -49,13 +49,15 @@ DEFAULT_CONFIG = {
     'FAN_SHUTOFF_HUMIDITY': 75.0,
     'FAN_PWM_FREQ': 5000,      # ESP32 PWM frequency (Hz)
     'RPM_AVG_WINDOW_SECONDS': 2,  # RPM averaging window (seconds)
+    'FAN_NIGHT_START_HOUR': 21,
+    'FAN_NIGHT_END_HOUR': 7,
     
     # Pump settings
     'PUMP_TRIGGER_HUMIDITY': 60.0,
     'PUMP_SPRAY_DURATION': 15,      # seconds
     'PUMP_COOLDOWN_MINUTES': 15,
-    'NIGHT_START_HOUR': 19,
-    'NIGHT_END_HOUR': 8,
+    'PUMP_NIGHT_START_HOUR': 19,
+    'PUMP_NIGHT_END_HOUR': 8,
     
     # Sampling
     'SAMPLE_INTERVAL': 30,      # seconds between samples
