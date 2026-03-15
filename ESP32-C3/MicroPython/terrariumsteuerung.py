@@ -11,6 +11,7 @@ import config
 from config import get
 from ntp_sync import get_current_hour, log_print as print
 import bme280_float
+import sht4x
 
 # --- Thresholds (loaded from storage) ---
 FAN_TARGET_HUMIDITY = 80.0
@@ -183,6 +184,25 @@ def is_pump_night_time():
     return False
 
 
+def _run_sht4x_heater(sht_sensor, reason):
+    """Run a short SHT4X heater cycle and return to high precision mode."""
+    try:
+        # Full 1-second heat pulse effectively evaporates condensation between infrequent cycles.
+        sht_sensor.heater_power = sht4x.HEATER110mW
+        sht_sensor.heat_time = sht4x.TEMP_1
+        _ = sht_sensor.measurements
+        sht_sensor.temperature_precision = sht4x.HIGH_PRECISION
+        print(f"[CTRL] SHT4X heater cycle done ({reason})")
+        return True
+    except Exception as e:
+        try:
+            sht_sensor.temperature_precision = sht4x.HIGH_PRECISION
+        except Exception:
+            pass
+        print(f"[CTRL] SHT4X heater error ({reason}): {e}")
+        return False
+
+
 async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_fan, pin_button_pump_override):
     """
     Main control loop: read sensors and control hardware.
@@ -191,12 +211,27 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
     global _current_temp, _current_humidity, _current_rpm, _current_fan_pwm
     global _current_pump_status, _last_spray_time, _rpm_pulses
     
-    # Initialize BME280
+    # Detect and initialize sensor (BME280 at 0x76/0x77, SHT4X at 0x44/0x45)
     try:
-        bme = bme280_float.BME280(i2c=i2c)
-        print("[CTRL] BME280 initialized")
+        devices = i2c.scan()
+        bme_sensor = None
+        sht_sensor = None
+        print(f"[CTRL] I2C devices: {[hex(d) for d in devices]}")
+        if 0x76 in devices or 0x77 in devices:
+            addr = 0x76 if 0x76 in devices else 0x77
+            bme_sensor = bme280_float.BME280(i2c=i2c, address=addr)
+            sensor_type = 'bme280'
+            print(f"[CTRL] BME280 initialized at {hex(addr)}")
+        elif 0x44 in devices or 0x45 in devices:
+            addr = 0x44 if 0x44 in devices else 0x45
+            sht_sensor = sht4x.SHT4X(i2c, address=addr)
+            sensor_type = 'sht4x'
+            print(f"[CTRL] SHT4X initialized at {hex(addr)}")
+        else:
+            print("[CTRL] No supported sensor found on I2C bus")
+            return
     except Exception as e:
-        print(f"[CTRL] Error initializing BME280: {e}")
+        print(f"[CTRL] Error initializing sensor: {e}")
         return
     
     # Setup RPM interrupt
@@ -215,6 +250,17 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
     rpm_window_start_ms = last_rpm_ms
     rpm_pulse_accum = 0
     sensor_values = array('f', [0.0, 0.0, 0.0])
+    pump_was_on = False
+
+    # SHT4X heater strategy:
+    # - periodic cycle every 30 minutes by default
+    # - extra cycle after pump run (with minimum spacing)
+    heater_interval_sec = int(get('SHT4X_HEATER_INTERVAL_MINUTES', 30)) * 60
+    heater_interval_sec = max(300, heater_interval_sec)
+    heater_min_gap_sec = int(get('SHT4X_HEATER_MIN_GAP_MINUTES', 5)) * 60
+    heater_min_gap_sec = max(60, heater_min_gap_sec)
+    sht_last_heater_time = time.time()
+    sht_heater_due_after_pump = False
     
     print("[CTRL] Control loop started")
     
@@ -224,8 +270,15 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
             
             # --- A) Read sensor data ---
             try:
-                bme.read_compensated_data(sensor_values)
-                temp, humidity = sensor_values[0], sensor_values[2]
+                if sensor_type == 'bme280':
+                    if bme_sensor is None:
+                        raise RuntimeError("BME280 not initialized")
+                    bme_sensor.read_compensated_data(sensor_values)
+                    temp, humidity = sensor_values[0], sensor_values[2]
+                else:
+                    if sht_sensor is None:
+                        raise RuntimeError("SHT4X not initialized")
+                    temp, humidity = sht_sensor.measurements
             except Exception as e:
                 print(f"[CTRL] Sensor read error: {e}")
                 temp, humidity = 20.0, 50.0
@@ -302,8 +355,27 @@ async def control_loop(i2c, pin_pwm_fan, pin_relay_fan, pin_relay_pump, pin_rpm_
                         pump_status = _make_pump_status("START")
                     else:
                         pump_status = _make_pump_status("BEREIT")
+
+            pump_is_on_now = bool(pin_relay_pump.value())
+            if pump_was_on and not pump_is_on_now and sensor_type == 'sht4x':
+                sht_heater_due_after_pump = True
+            pump_was_on = pump_is_on_now
+
+            # --- E) Optional SHT4X heater cycles ---
+            if sensor_type == 'sht4x':
+                heater_reason = ''
+                time_since_heater = now - sht_last_heater_time
+                if time_since_heater >= heater_interval_sec:
+                    heater_reason = 'periodic'
+                elif sht_heater_due_after_pump and time_since_heater >= heater_min_gap_sec:
+                    heater_reason = 'after-pump'
+
+                if heater_reason:
+                    if sht_sensor and _run_sht4x_heater(sht_sensor, heater_reason):
+                        sht_last_heater_time = now
+                        sht_heater_due_after_pump = False
             
-            # --- E) Update state for web API ---
+            # --- F) Update state for web API ---
             _current_temp = temp
             _current_humidity = humidity
             _current_rpm = rpm
