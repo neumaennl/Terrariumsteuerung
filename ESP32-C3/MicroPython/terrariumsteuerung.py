@@ -51,12 +51,15 @@ def _clamp_fan_target(value):
 
 def load_thresholds_from_config():
     """Load thresholds from config.json into memory."""
-    global FAN_TARGET_HUMIDITY, FAN_SHUTOFF_HUMIDITY, PUMP_TRIGGER_HUMIDITY, PUMP_SPRAY_DURATION
+    global FAN_TARGET_HUMIDITY, FAN_SHUTOFF_HUMIDITY, FAN_NIGHT_START_HOUR, FAN_NIGHT_END_HOUR
+    global PUMP_TRIGGER_HUMIDITY, PUMP_SPRAY_DURATION
     global PUMP_COOLDOWN_MINUTES, PUMP_NIGHT_START_HOUR, PUMP_NIGHT_END_HOUR
     
     try:
         FAN_TARGET_HUMIDITY = _clamp_fan_target(get('FAN_TARGET_HUMIDITY', FAN_TARGET_HUMIDITY))
         FAN_SHUTOFF_HUMIDITY = float(get('FAN_SHUTOFF_HUMIDITY', FAN_SHUTOFF_HUMIDITY))
+        FAN_NIGHT_START_HOUR = int(get('FAN_NIGHT_START_HOUR', FAN_NIGHT_START_HOUR))
+        FAN_NIGHT_END_HOUR = int(get('FAN_NIGHT_END_HOUR', FAN_NIGHT_END_HOUR))
         PUMP_TRIGGER_HUMIDITY = float(get('PUMP_TRIGGER_HUMIDITY', PUMP_TRIGGER_HUMIDITY))
         PUMP_SPRAY_DURATION = int(get('PUMP_SPRAY_DURATION', PUMP_SPRAY_DURATION))
         PUMP_COOLDOWN_MINUTES = int(get('PUMP_COOLDOWN_MINUTES', PUMP_COOLDOWN_MINUTES))
@@ -69,7 +72,8 @@ def load_thresholds_from_config():
 
 def set_threshold_value(name, value):
     """Set threshold and save to config.json."""
-    global FAN_TARGET_HUMIDITY, PUMP_TRIGGER_HUMIDITY, PUMP_SPRAY_DURATION
+    global FAN_TARGET_HUMIDITY, FAN_SHUTOFF_HUMIDITY, FAN_NIGHT_START_HOUR, FAN_NIGHT_END_HOUR
+    global PUMP_TRIGGER_HUMIDITY, PUMP_SPRAY_DURATION
     global PUMP_COOLDOWN_MINUTES, PUMP_NIGHT_START_HOUR, PUMP_NIGHT_END_HOUR
     
     if name == 'FAN_TARGET_HUMIDITY':
@@ -78,6 +82,12 @@ def set_threshold_value(name, value):
     elif name == 'FAN_SHUTOFF_HUMIDITY':
         FAN_SHUTOFF_HUMIDITY = float(value)
         value = FAN_SHUTOFF_HUMIDITY
+    elif name == 'FAN_NIGHT_START_HOUR':
+        FAN_NIGHT_START_HOUR = int(value)
+        value = FAN_NIGHT_START_HOUR
+    elif name == 'FAN_NIGHT_END_HOUR':
+        FAN_NIGHT_END_HOUR = int(value)
+        value = FAN_NIGHT_END_HOUR
     elif name == 'PUMP_TRIGGER_HUMIDITY':
         PUMP_TRIGGER_HUMIDITY = float(value)
     elif name == 'PUMP_SPRAY_DURATION':
@@ -98,6 +108,10 @@ def get_threshold_value(name):
         return FAN_TARGET_HUMIDITY
     elif name == 'FAN_SHUTOFF_HUMIDITY':
         return FAN_SHUTOFF_HUMIDITY
+    elif name == 'FAN_NIGHT_START_HOUR':
+        return FAN_NIGHT_START_HOUR
+    elif name == 'FAN_NIGHT_END_HOUR':
+        return FAN_NIGHT_END_HOUR
     elif name == 'PUMP_TRIGGER_HUMIDITY':
         return PUMP_TRIGGER_HUMIDITY
     elif name == 'PUMP_SPRAY_DURATION':
@@ -117,6 +131,8 @@ def reset_thresholds_to_defaults():
     for key in (
         'FAN_TARGET_HUMIDITY',
         'FAN_SHUTOFF_HUMIDITY',
+        'FAN_NIGHT_START_HOUR',
+        'FAN_NIGHT_END_HOUR',
         'PUMP_TRIGGER_HUMIDITY',
         'PUMP_SPRAY_DURATION',
         'PUMP_COOLDOWN_MINUTES',

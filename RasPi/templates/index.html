@@ -149,6 +149,7 @@
                 const form = document.getElementById('settingsForm');
                 [
                     'FAN_TARGET_HUMIDITY',
+                    'FAN_SHUTOFF_HUMIDITY',
                     'FAN_NIGHT_START_HOUR',
                     'FAN_NIGHT_END_HOUR',
                     'PUMP_TRIGGER_HUMIDITY',
@@ -433,6 +434,7 @@
             <h2>Schwellwerte ändern</h2>
             <form id="settingsForm">
                 <label>Ziel-Feuchte Lüfter: <input type="number" step="0.1" name="FAN_TARGET_HUMIDITY" value="{{ data.FAN_TARGET_HUMIDITY }}"></label>
+                <label>Lüfter aus unter (%): <input type="number" step="0.1" name="FAN_SHUTOFF_HUMIDITY" value="{{ data.FAN_SHUTOFF_HUMIDITY }}"></label>
                 <label>Nachtmodus Lüfter Start (Stunde): <input type="number" name="FAN_NIGHT_START_HOUR" value="{{ data.FAN_NIGHT_START_HOUR }}"></label>
                 <label>Nachtmodus Lüfter Ende (Stunde): <input type="number" name="FAN_NIGHT_END_HOUR" value="{{ data.FAN_NIGHT_END_HOUR }}"></label>
                 <label>Pumpe aktiv unter (%): <input type="number" step="0.1" name="PUMP_TRIGGER_HUMIDITY" value="{{ data.PUMP_TRIGGER_HUMIDITY }}"></label>

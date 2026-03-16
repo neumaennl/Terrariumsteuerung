@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, jsonify, render_template, request
 import logging
 import threading
 import time
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-ESP_BASE_URL = 'http://terrarium.local'
+ESP_BASE_URL = 'http://terrarium'
 ESP_TIMEOUT_SECONDS = 5
 POLL_INTERVAL_SECONDS = 3
 
@@ -29,10 +29,10 @@ def _default_data():
         'fan_pwm': 0,
         'pump_status': 'INIT',
         'FAN_TARGET_HUMIDITY': 80.0,
+        'FAN_SHUTOFF_HUMIDITY': 75.0,
         'FAN_NIGHT_START_HOUR': 21,
         'FAN_NIGHT_END_HOUR': 7,
         'PUMP_TRIGGER_HUMIDITY': 60.0,
-        'PUMP_EMERGENCY_OFF': 85.0,
         'PUMP_SPRAY_DURATION': 15,
         'PUMP_COOLDOWN_MINUTES': 15,
         'PUMP_NIGHT_START_HOUR': 19,
@@ -111,40 +111,6 @@ def index():
         'archive_resolution_seconds': int(getattr(terrariumsteuerung, 'ARCHIVE_RESOLUTION_SECONDS', 900)),
     }
     return render_template('index.html', data=_get_snapshot(), history_config=history_config)
-
-
-@app.route('/update', methods=['POST'])
-def update():
-    payload = {}
-    keys = [
-        'FAN_TARGET_HUMIDITY',
-        'FAN_NIGHT_START_HOUR',
-        'FAN_NIGHT_END_HOUR',
-        'PUMP_TRIGGER_HUMIDITY',
-        'PUMP_EMERGENCY_OFF',
-        'PUMP_SPRAY_DURATION',
-        'PUMP_COOLDOWN_MINUTES',
-        'PUMP_NIGHT_START_HOUR',
-        'PUMP_NIGHT_END_HOUR',
-    ]
-
-    for key in keys:
-        if key not in request.form:
-            continue
-        raw = request.form[key]
-        try:
-            payload[key] = float(raw) if '.' in raw else int(raw)
-        except Exception:
-            payload[key] = raw
-
-    try:
-        terrariumsteuerung.push_esp_settings(ESP_BASE_URL, payload, timeout=ESP_TIMEOUT_SECONDS)
-        poll_esp_once()
-    except Exception as exc:
-        logger.exception('Failed to forward settings')
-        return jsonify({'ok': False, 'error': str(exc)}), 500
-
-    return redirect(url_for('index'))
 
 
 @app.route('/api/data')
